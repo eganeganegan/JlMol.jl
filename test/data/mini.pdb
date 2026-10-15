@@ -1,0 +1,14 @@
+HEADER    MINIATURE PEPTIDE TEST STRUCTURE
+ATOM      1  N   GLY A   1      -1.458   0.000   0.000  1.00 12.00           N
+ATOM      2  CA  GLY A   1       0.000   0.000   0.000  1.00 10.00           C
+ATOM      3  C   GLY A   1       0.525   1.430   0.000  1.00 11.00           C
+ATOM      4  O   GLY A   1      -0.207   2.384   0.000  1.00 13.00           O
+ATOM      5  N   ALA A   2       1.817   1.584   0.000  1.00 12.00           N
+ATOM      6  CA  ALA A   2       2.442   2.909   0.000  1.00 10.00           C
+ATOM      7  CB  ALA A   2       3.950   2.746   0.000  1.00 14.00           C
+ATOM      8  C   ALA A   2       1.903   3.732   1.166  1.00 11.00           C
+ATOM      9  O   ALA A   2       1.505   4.886   1.005  1.00 13.00           O
+ATOM     10  O   HOH B 101       3.500   0.300   1.200  1.00 20.00           O
+TER
+END
+
