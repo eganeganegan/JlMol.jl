@@ -15,6 +15,8 @@ public:
     explicit ConsoleInput(QWidget* parent = nullptr);
 signals:
     void executeRequested();
+    void previousHistoryRequested();
+    void nextHistoryRequested();
 protected:
     void keyPressEvent(QKeyEvent* event) override;
 };
@@ -33,6 +35,7 @@ private:
     QTextBrowser* output_{};
     ConsoleInput* input_{};
     QStringList history_;
+    int historyIndex_{};
 };
 
 } // namespace jlmol

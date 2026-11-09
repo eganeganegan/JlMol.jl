@@ -6,13 +6,60 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_MACOSX_RPATH ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(JLMOL_ENABLE_JULIA "Build the embedded Julia runtime" ON)
 option(JLMOL_BUILD_TESTS "Build native tests" ON)
+option(JLMOL_USE_CHEMFILES "Use Chemfiles for molecular file import" ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 
+if(APPLE AND EXISTS "/opt/homebrew/opt/zlib/lib/libz.dylib")
+    set(ZLIB_ROOT "/opt/homebrew/opt/zlib" CACHE PATH "Homebrew zlib root" FORCE)
+    set(ZLIB_LIBRARY "/opt/homebrew/opt/zlib/lib/libz.dylib" CACHE FILEPATH "zlib library" FORCE)
+    set(ZLIB_INCLUDE_DIR "/opt/homebrew/opt/zlib/include" CACHE PATH "zlib include directory" FORCE)
+endif()
+
+if(JLMOL_USE_CHEMFILES)
+    find_package(chemfiles 0.10 CONFIG QUIET)
+    if(NOT TARGET chemfiles)
+        include(FetchContent)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies statically" FORCE)
+        set(CHFL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(CHFL_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+        set(CHFL_USE_WARNINGS OFF CACHE BOOL "" FORCE)
+        set(CHFL_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+        set(CHFL_SYSTEM_LZMA ON CACHE BOOL "" FORCE)
+        set(CHFL_SYSTEM_BZIP2 ON CACHE BOOL "" FORCE)
+        # Chemfiles 0.10 supports older CMake releases; this keeps CMake 4 compatible.
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+        FetchContent_Declare(chemfiles
+            GIT_REPOSITORY https://github.com/chemfiles/chemfiles.git
+            GIT_TAG 843e5949db829dcf76bac1ca3521cc8e10f9ea4e
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(chemfiles)
+        # Chemfiles enables glibc large-file extensions unconditionally. macOS
+        # does not provide off64_t, so remove those two private definitions while
+        # retaining _FILE_OFFSET_BITS=64 and the system zlib implementation.
+        if(APPLE AND TARGET chemfiles_objects)
+            get_target_property(_jlmol_chemfiles_definitions chemfiles_objects COMPILE_DEFINITIONS)
+            if(_jlmol_chemfiles_definitions)
+                list(FILTER _jlmol_chemfiles_definitions EXCLUDE REGEX "_LARGEFILE64_SOURCE|_LFS64_LARGEFILE")
+                set_property(TARGET chemfiles_objects PROPERTY COMPILE_DEFINITIONS "${_jlmol_chemfiles_definitions}")
+                target_compile_definitions(chemfiles_objects PRIVATE
+                    gzopen64=gzopen
+                    gzseek64=gzseek
+                    z_off64_t=z_off_t
+                )
+            endif()
+        endif()
+    endif()
+endif()
+
 set(JLMOL_CORE_SOURCES
+    native/core/Analysis.cpp
+    native/core/MmcifMetadata.cpp
     native/core/Molecule.cpp
     native/core/MolecularScene.cpp
     native/bridge/JlMolAPI.cpp
@@ -21,6 +68,10 @@ set(JLMOL_CORE_SOURCES
 add_library(jlmol_core SHARED ${JLMOL_CORE_SOURCES})
 target_include_directories(jlmol_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/native)
 target_compile_definitions(jlmol_core PRIVATE JLMOL_CORE_BUILD)
+if(TARGET chemfiles)
+    target_link_libraries(jlmol_core PRIVATE chemfiles)
+    target_compile_definitions(jlmol_core PRIVATE JLMOL_HAS_CHEMFILES=1)
+endif()
 set_target_properties(jlmol_core PROPERTIES OUTPUT_NAME jlmol_core)
 
 set(JLMOL_APP_SOURCES
@@ -29,6 +80,7 @@ set(JLMOL_APP_SOURCES
     native/gui/JuliaConsole.cpp
     native/gui/MainWindow.cpp
     native/gui/MolecularViewport.cpp
+    native/gui/ScriptEditor.cpp
     native/scripting/JuliaRuntime.cpp
 )
 
@@ -86,6 +138,9 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
     target_link_libraries(jlmol_core_tests PRIVATE jlmol_core)
     add_test(NAME native_core COMMAND jlmol_core_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/mini.pdb"
-        "${CMAKE_CURRENT_SOURCE_DIR}/resources/1CRN.pdb")
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/1CRN.pdb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/water.xyz"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/mini.cif"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/secondary.mmcif")
 endif()
 

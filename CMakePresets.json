@@ -8,7 +8,7 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qtbase"
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qtbase;/opt/homebrew/opt/zlib"
       }
     }
   ],

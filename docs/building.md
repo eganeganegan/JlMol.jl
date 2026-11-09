@@ -1,11 +1,11 @@
 # Building JlMol
 
-Requirements: CMake 3.24+, Ninja, a C++20 compiler, Qt 6 Base (Widgets and OpenGLWidgets), and Julia 1.10 or newer.
+Requirements: CMake 3.24+, Ninja, a C++20 compiler, Qt 6 Base (Widgets and OpenGLWidgets), zlib, and Julia 1.10 or newer. CMake fetches the pinned Chemfiles 0.10.4 source on the first configure unless a compatible installed package is found. Set `JLMOL_USE_CHEMFILES=OFF` for the PDB-only fallback build.
 
 On Apple Silicon with Homebrew:
 
 ```sh
-brew install cmake ninja qtbase juliaup
+brew install cmake ninja qtbase zlib juliaup
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev

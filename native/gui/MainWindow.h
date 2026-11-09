@@ -8,6 +8,8 @@
 #include <memory>
 
 class QLabel;
+class QDockWidget;
+class QScrollArea;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -15,6 +17,7 @@ namespace jlmol {
 
 class JuliaConsole;
 class MolecularViewport;
+class ScriptEditor;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -24,6 +27,8 @@ public:
 
     bool openStructure(const QString& path);
     bool runIntegrationSelfTest(QString* report = nullptr);
+    bool runGraphicsSelfTest(QString* report = nullptr);
+    bool runScriptEditorSelfTest(QString* report = nullptr);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -41,6 +46,9 @@ private:
     void createDocks();
     void restoreSettings();
     void saveSettings();
+    void chooseObjectOpacity(ObjectId id);
+    bool showAlignment(ObjectId referenceId);
+    bool showContactMap(double cutoff, bool cAlphaOnly);
     static void bridgeSceneChanged(void* userData);
 
     std::shared_ptr<MolecularScene> scene_;
@@ -48,9 +56,14 @@ private:
     MolecularViewport* viewport_{};
     QTreeWidget* objectTree_{};
     QLabel* inspector_{};
+    QLabel* analysisSummary_{};
+    QLabel* analysisMap_{};
+    QScrollArea* analysisMapScroll_{};
+    QDockWidget* analysisDock_{};
     QLabel* atomCountLabel_{};
     JuliaRuntime juliaRuntime_;
     JuliaConsole* juliaConsole_{};
+    ScriptEditor* scriptEditor_{};
 };
 
 } // namespace jlmol

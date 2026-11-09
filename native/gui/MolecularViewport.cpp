@@ -1,15 +1,56 @@
 #include "gui/MolecularViewport.h"
 
+#include <QApplication>
 #include <QMouseEvent>
 #include <QOpenGLContext>
+#include <QPainter>
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <unordered_set>
 
 namespace jlmol {
 namespace {
+
+constexpr auto geometryFragmentPrelude = R"GLSL(#version 410 core
+uniform float opacity;
+uniform int renderPass;
+vec4 encodeFragment(vec3 rgb) {
+    if (renderPass == 1) {
+        // Weighted blended transparency: favor nearer fragments in perspective.
+        float weight = 1.0 + clamp(200.0 * gl_FragCoord.w, 0.0, 8.0);
+        return vec4(rgb * opacity, opacity) * weight;
+    }
+    if (renderPass == 2) return vec4(0.0, 0.0, 0.0, opacity);
+    return vec4(rgb, 1.0);
+}
+)GLSL";
+
+constexpr auto compositeVertexShader = R"GLSL(
+#version 410 core
+void main() {
+    vec2 corner = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+)GLSL";
+
+constexpr auto compositeFragmentShader = R"GLSL(
+#version 410 core
+uniform sampler2D opaqueTexture;
+uniform sampler2D accumulationTexture;
+uniform sampler2D revealageTexture;
+out vec4 fragColor;
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec3 opaque = texelFetch(opaqueTexture, pixel, 0).rgb;
+    vec4 accumulation = texelFetch(accumulationTexture, pixel, 0);
+    float revealage = texelFetch(revealageTexture, pixel, 0).r;
+    vec3 transparent = accumulation.rgb / max(accumulation.a, 1.0e-12);
+    fragColor = vec4(mix(transparent, opaque, revealage), 1.0);
+}
+)GLSL";
 
 constexpr auto atomVertexShader = R"GLSL(
 #version 410 core
@@ -17,23 +58,22 @@ layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 color;
 layout(location = 2) in float radius;
 layout(location = 3) in float selected;
+layout(location = 4) in float atomScale;
 uniform mat4 mvp;
 uniform mat4 view;
 uniform float viewportHeight;
-uniform float scale;
 out vec3 vertexColor;
 out float isSelected;
 void main() {
     vec4 eye = view * vec4(position, 1.0);
     gl_Position = mvp * vec4(position, 1.0);
-    gl_PointSize = clamp(radius * scale * viewportHeight / max(1.0, -eye.z), 2.0, 180.0);
+    gl_PointSize = clamp(radius * atomScale * viewportHeight / max(1.0, -eye.z), 2.0, 180.0);
     vertexColor = color;
     isSelected = selected;
 }
 )GLSL";
 
 constexpr auto atomFragmentShader = R"GLSL(
-#version 410 core
 in vec3 vertexColor;
 in float isSelected;
 out vec4 fragColor;
@@ -45,24 +85,56 @@ void main() {
     float diffuse = 0.30 + 0.70 * max(0.0, dot(normalize(vec3(-0.35, 0.5, 1.0)), normal));
     vec3 base = mix(vertexColor, vec3(1.0, 0.72, 0.08), isSelected);
     float rim = isSelected * smoothstep(0.58, 0.95, sqrt(r2));
-    fragColor = vec4(mix(base * diffuse, vec3(1.0, 0.9, 0.2), rim), 1.0);
+    fragColor = encodeFragment(mix(base * diffuse, vec3(1.0, 0.9, 0.2), rim));
 }
 )GLSL";
 
 constexpr auto bondVertexShader = R"GLSL(
 #version 410 core
 layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 color;
 uniform mat4 mvp;
-void main() { gl_Position = mvp * vec4(position, 1.0); }
+out vec3 vertexColor;
+void main() {
+    gl_Position = mvp * vec4(position, 1.0);
+    vertexColor = color;
+}
 )GLSL";
 
 constexpr auto bondFragmentShader = R"GLSL(
-#version 410 core
+in vec3 vertexColor;
 out vec4 fragColor;
-void main() { fragColor = vec4(0.52, 0.57, 0.64, 1.0); }
+void main() { fragColor = encodeFragment(vertexColor); }
 )GLSL";
 
-std::unique_ptr<QOpenGLShaderProgram> makeProgram(const char* vertex, const char* fragment) {
+constexpr auto ribbonVertexShader = R"GLSL(
+#version 410 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 color;
+layout(location = 2) in vec3 normal;
+uniform mat4 mvp;
+uniform mat3 normalMatrix;
+out vec3 vertexColor;
+out vec3 eyeNormal;
+void main() {
+    gl_Position = mvp * vec4(position, 1.0);
+    vertexColor = color;
+    eyeNormal = normalize(normalMatrix * normal);
+}
+)GLSL";
+
+constexpr auto ribbonFragmentShader = R"GLSL(
+in vec3 vertexColor;
+in vec3 eyeNormal;
+out vec4 fragColor;
+void main() {
+    vec3 n = normalize(eyeNormal);
+    float diffuse = 0.28 + 0.72 * abs(dot(n, normalize(vec3(-0.35, 0.5, 1.0))));
+    fragColor = encodeFragment(vertexColor * diffuse);
+}
+)GLSL";
+
+std::unique_ptr<QOpenGLShaderProgram> makeProgram(const char* vertex, const QByteArray& fragment) {
     auto program = std::make_unique<QOpenGLShaderProgram>();
     if (!program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertex) ||
         !program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragment) || !program->link()) {
@@ -76,6 +148,31 @@ QVector3D chainColor(const std::string& chain) {
     return QVector3D(0.25F + static_cast<float>(hash & 255U) / 510.0F,
                      0.25F + static_cast<float>((hash >> 8U) & 255U) / 510.0F,
                      0.25F + static_cast<float>((hash >> 16U) & 255U) / 510.0F);
+}
+
+void appendRibbonPrism(std::vector<RibbonVertex>& vertices, const RibbonFrame& frame, float halfWidth,
+                       float halfThickness, const QVector3D& color) {
+    const QVector3D a(frame.first.x, frame.first.y, frame.first.z);
+    const QVector3D b(frame.second.x, frame.second.y, frame.second.z);
+    const QVector3D side(frame.side.x, frame.side.y, frame.side.z);
+    const QVector3D normal(frame.normal.x, frame.normal.y, frame.normal.z);
+    const QVector3D tangent = (b - a).normalized();
+    const QVector3D points[] = {
+        a - side * halfWidth - normal * halfThickness, a + side * halfWidth - normal * halfThickness,
+        a + side * halfWidth + normal * halfThickness, a - side * halfWidth + normal * halfThickness,
+        b - side * halfWidth - normal * halfThickness, b + side * halfWidth - normal * halfThickness,
+        b + side * halfWidth + normal * halfThickness, b - side * halfWidth + normal * halfThickness};
+    const auto face = [&vertices, &points, &color](int aIndex, int bIndex, int cIndex, int dIndex, const QVector3D& faceNormal) {
+        for (const int index : {aIndex, bIndex, cIndex, aIndex, cIndex, dIndex}) {
+            vertices.push_back(RibbonVertex{points[index], color, faceNormal});
+        }
+    };
+    face(3, 2, 6, 7, normal);
+    face(0, 4, 5, 1, -normal);
+    face(1, 5, 6, 2, side);
+    face(0, 3, 7, 4, -side);
+    face(0, 1, 2, 3, -tangent);
+    face(4, 7, 6, 5, tangent);
 }
 
 } // namespace
@@ -99,20 +196,27 @@ void MolecularViewport::initializeGL() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_MULTISAMPLE);
+    GLfloat lineWidths[2]{1.0F, 1.0F};
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lineWidths);
+    lineWidth_ = std::clamp(3.0F, lineWidths[0], lineWidths[1]);
     glClearColor(0.035F, 0.047F, 0.066F, 1.0F);
-    atomProgram_ = makeProgram(atomVertexShader, atomFragmentShader);
-    bondProgram_ = makeProgram(bondVertexShader, bondFragmentShader);
+    atomProgram_ = makeProgram(atomVertexShader, QByteArray(geometryFragmentPrelude) + atomFragmentShader);
+    bondProgram_ = makeProgram(bondVertexShader, QByteArray(geometryFragmentPrelude) + bondFragmentShader);
+    ribbonProgram_ = makeProgram(ribbonVertexShader, QByteArray(geometryFragmentPrelude) + ribbonFragmentShader);
+    compositeProgram_ = makeProgram(compositeVertexShader, compositeFragmentShader);
     atomBuffer_.create();
     bondBuffer_.create();
+    ribbonBuffer_.create();
     atomVao_.create();
     bondVao_.create();
+    ribbonVao_.create();
+    compositeVao_.create();
     rebuildGeometry();
 }
 
 void MolecularViewport::resizeGL(int, int) {}
 
 void MolecularViewport::paintGL() {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (uploadedGeneration_ != scene_->generation()) {
         rebuildGeometry();
     }
@@ -120,33 +224,128 @@ void MolecularViewport::paintGL() {
         return;
     }
     const auto view = modelViewMatrix();
-    const auto projection = projectionMatrix();
-    const auto mvp = projection * view;
-    const auto representation = scene_->representation();
+    const auto mvp = projectionMatrix() * view;
+    const bool transparent = std::any_of(batches_.begin(), batches_.end(), [](const auto& batch) {
+        return batch.opacity < 1.0F && (batch.atoms.count || batch.bonds.count || batch.ribbons.count);
+    });
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    if (!transparent) transparencyBuffer_.reset();
+    if (!transparent || !drawTransparentScene(view, mvp)) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        drawGeometry(view, mvp, 0, false);
+    }
+    drawLabels(mvp);
+}
 
-    if (!bondVertices_.empty() && representation != Representation::SpaceFilling && representation != Representation::Points) {
+void MolecularViewport::drawGeometry(const QMatrix4x4& view, const QMatrix4x4& mvp, int pass, bool opaqueOnly) {
+    const auto draw = [&](QOpenGLShaderProgram& program, GLenum mode, DrawRange DrawBatch::*range) {
+        program.setUniformValue("renderPass", pass);
+        for (const auto& batch : batches_) {
+            if (pass != 0 ? batch.opacity >= 1.0F : opaqueOnly && batch.opacity < 1.0F) continue;
+            const auto [first, count] = batch.*range;
+            if (!count) continue;
+            program.setUniformValue("opacity", batch.opacity);
+            glDrawArrays(mode, first, count);
+        }
+    };
+    if (!ribbonVertices_.empty()) {
+        ribbonProgram_->bind();
+        ribbonProgram_->setUniformValue("mvp", mvp);
+        ribbonProgram_->setUniformValue("normalMatrix", view.normalMatrix());
+        ribbonVao_.bind();
+        draw(*ribbonProgram_, GL_TRIANGLES, &DrawBatch::ribbons);
+        ribbonVao_.release();
+        ribbonProgram_->release();
+    }
+    if (!bondVertices_.empty()) {
         bondProgram_->bind();
         bondProgram_->setUniformValue("mvp", mvp);
         bondVao_.bind();
-        glLineWidth(representation == Representation::Lines ? 2.0F : 4.0F);
-        glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(bondVertices_.size()));
+        glLineWidth(lineWidth_);
+        draw(*bondProgram_, GL_LINES, &DrawBatch::bonds);
         bondVao_.release();
         bondProgram_->release();
     }
 
-    if (representation != Representation::Lines && !atoms_.empty()) {
+    if (!atoms_.empty()) {
         atomProgram_->bind();
         atomProgram_->setUniformValue("mvp", mvp);
         atomProgram_->setUniformValue("view", view);
         atomProgram_->setUniformValue("viewportHeight", static_cast<float>(height() * devicePixelRatioF()));
-        const float scale = representation == Representation::SpaceFilling ? 2.15F :
-                            representation == Representation::Points ? 0.28F : 0.72F;
-        atomProgram_->setUniformValue("scale", scale);
         atomVao_.bind();
-        glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(atoms_.size()));
+        draw(*atomProgram_, GL_POINTS, &DrawBatch::atoms);
         atomVao_.release();
         atomProgram_->release();
     }
+}
+
+bool MolecularViewport::drawTransparentScene(const QMatrix4x4& view, const QMatrix4x4& mvp) {
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const QSize pixels(viewport[2], viewport[3]);
+    if (pixels.isEmpty()) return false;
+    if (!transparencyBuffer_ || transparencyBuffer_->size() != pixels) {
+        QOpenGLFramebufferObjectFormat format;
+        format.setAttachment(QOpenGLFramebufferObject::Depth);
+        format.setInternalTextureFormat(GL_RGBA8);
+        transparencyBuffer_ = std::make_unique<QOpenGLFramebufferObject>(pixels, format);
+        if (transparencyBuffer_->isValid()) {
+            transparencyBuffer_->addColorAttachment(pixels, GL_RGBA16F);
+            transparencyBuffer_->addColorAttachment(pixels, GL_R16F);
+        }
+        if (!transparencyBuffer_->isValid() || transparencyBuffer_->textures().size() != 3) {
+            qWarning("JlMol: transparency framebuffer unavailable; using opaque rendering.");
+        }
+    }
+    const auto textures = transparencyBuffer_->textures();
+    if (!transparencyBuffer_->isValid() || textures.size() != 3 || !transparencyBuffer_->bind()) {
+        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        return false;
+    }
+
+    // The three color targets share the same opaque depth buffer.
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    drawGeometry(view, mvp, 0);
+
+    constexpr GLfloat clear[4]{0, 0, 0, 0};
+    constexpr GLfloat reveal[4]{1, 1, 1, 1};
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glDrawBuffer(GL_COLOR_ATTACHMENT1);
+    glClearBufferfv(GL_COLOR, 0, clear);
+    glBlendFunc(GL_ONE, GL_ONE);
+    drawGeometry(view, mvp, 1);
+    glDrawBuffer(GL_COLOR_ATTACHMENT2);
+    glClearBufferfv(GL_COLOR, 0, reveal);
+    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+    drawGeometry(view, mvp, 2);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    compositeProgram_->bind();
+    compositeProgram_->setUniformValue("opaqueTexture", 0);
+    compositeProgram_->setUniformValue("accumulationTexture", 1);
+    compositeProgram_->setUniformValue("revealageTexture", 2);
+    for (int unit = 0; unit < 3; ++unit) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, textures[unit]);
+    }
+    compositeVao_.bind();
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    compositeVao_.release();
+    for (int unit = 2; unit >= 0; --unit) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    compositeProgram_->release();
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+    return true;
 }
 
 void MolecularViewport::sceneChanged() {
@@ -156,23 +355,70 @@ void MolecularViewport::sceneChanged() {
 
 void MolecularViewport::rebuildGeometry() {
     if (!context()) return;
-    const auto molecule = scene_->molecule();
     atoms_.clear();
     bondVertices_.clear();
-    if (molecule) {
-        const auto selection = scene_->selectedAtomId();
-        atoms_.reserve(molecule->atoms().size());
-        for (const auto& atom : molecule->atoms()) {
-            atoms_.push_back(RenderVertex{QVector3D(atom.position.x, atom.position.y, atom.position.z), colorForAtom(atom),
-                                          elementRadius(atom.element), selection == atom.id ? 1.0F : 0.0F});
+    ribbonVertices_.clear();
+    batches_.clear();
+    const auto selectedObject = scene_->selectedObjectId();
+    const auto selectedAtomIds = scene_->selectedAtomIds();
+    const std::unordered_set<std::uint64_t> selectedAtoms(selectedAtomIds.begin(), selectedAtomIds.end());
+    for (const auto& object : scene_->objects()) {
+        if (!object.visible || object.opacity <= 0.0 || !object.molecule) continue;
+        DrawBatch batch;
+        batch.opacity = static_cast<float>(object.opacity);
+        batch.atoms.first = static_cast<GLint>(atoms_.size());
+        batch.bonds.first = static_cast<GLint>(bondVertices_.size());
+        batch.ribbons.first = static_cast<GLint>(ribbonVertices_.size());
+        const auto& molecule = *object.molecule;
+        if (object.representation == Representation::BallAndStick ||
+            object.representation == Representation::SpaceFilling ||
+            object.representation == Representation::Points) {
+            const float scale = object.representation == Representation::SpaceFilling ? 2.15F :
+                                object.representation == Representation::Points ? 0.28F : 0.72F;
+            atoms_.reserve(atoms_.size() + molecule.atoms().size());
+            for (const auto& atom : molecule.atoms()) {
+                const bool selected = selectedObject == object.id && selectedAtoms.contains(atom.id);
+                atoms_.push_back(RenderVertex{QVector3D(atom.position.x, atom.position.y, atom.position.z),
+                                              colorForAtom(atom, object.colorScheme), elementRadius(atom.element),
+                                              selected ? 1.0F : 0.0F, scale});
+            }
         }
-        bondVertices_.reserve(molecule->bonds().size() * 2U);
-        for (const auto& bond : molecule->bonds()) {
-            const auto& a = molecule->atoms()[bond.first].position;
-            const auto& b = molecule->atoms()[bond.second].position;
-            bondVertices_.emplace_back(a.x, a.y, a.z);
-            bondVertices_.emplace_back(b.x, b.y, b.z);
+        if (object.representation == Representation::BallAndStick || object.representation == Representation::Lines) {
+            bondVertices_.reserve(bondVertices_.size() + molecule.bonds().size() * 2U);
+            for (const auto& bond : molecule.bonds()) {
+                const auto& a = molecule.atoms()[bond.first].position;
+                const auto& b = molecule.atoms()[bond.second].position;
+                const QVector3D color(0.52F, 0.57F, 0.64F);
+                bondVertices_.push_back({QVector3D(a.x, a.y, a.z), color});
+                bondVertices_.push_back({QVector3D(b.x, b.y, b.z), color});
+            }
+        } else if (object.representation == Representation::CAlphaTrace || object.representation == Representation::Backbone) {
+            const auto trace = object.representation == Representation::CAlphaTrace ? molecule.cAlphaTrace() : molecule.backboneTrace();
+            bondVertices_.reserve(bondVertices_.size() + trace.size() * 2U);
+            for (const auto& segment : trace) {
+                const auto& a = molecule.atoms()[segment.first].position;
+                const auto& b = molecule.atoms()[segment.second].position;
+                const auto& sourceAtom = molecule.atoms()[segment.first];
+                const QVector3D color = colorForAtom(sourceAtom, object.colorScheme);
+                bondVertices_.push_back({QVector3D(a.x, a.y, a.z), color});
+                bondVertices_.push_back({QVector3D(b.x, b.y, b.z), color});
+            }
+        } else if (object.representation == Representation::Cartoon || object.representation == Representation::Ribbon) {
+            const bool ribbon = object.representation == Representation::Ribbon;
+            const auto frames = molecule.ribbonFrames(ribbon ? 8U : 6U);
+            ribbonVertices_.reserve(ribbonVertices_.size() + frames.size() * 36U);
+            for (const auto& frame : frames) {
+                float width = ribbon ? 0.42F : 0.28F;
+                if (!ribbon && frame.secondaryStructure == SecondaryStructure::Helix) width = 0.62F;
+                if (!ribbon && frame.secondaryStructure == SecondaryStructure::Sheet) width = 0.78F;
+                appendRibbonPrism(ribbonVertices_, frame, width, ribbon ? 0.07F : 0.10F,
+                                  colorForAtom(molecule.atoms()[frame.sourceAtom], object.colorScheme));
+            }
         }
+        batch.atoms.count = static_cast<GLsizei>(atoms_.size() - batch.atoms.first);
+        batch.bonds.count = static_cast<GLsizei>(bondVertices_.size() - batch.bonds.first);
+        batch.ribbons.count = static_cast<GLsizei>(ribbonVertices_.size() - batch.ribbons.first);
+        batches_.push_back(batch);
     }
 
     atomVao_.bind();
@@ -186,26 +432,48 @@ void MolecularViewport::rebuildGeometry() {
     glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), reinterpret_cast<void*>(offsetof(RenderVertex, radius)));
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), reinterpret_cast<void*>(offsetof(RenderVertex, selected)));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), reinterpret_cast<void*>(offsetof(RenderVertex, scale)));
     atomBuffer_.release();
     atomVao_.release();
 
     bondVao_.bind();
     bondBuffer_.bind();
-    bondBuffer_.allocate(bondVertices_.data(), static_cast<int>(bondVertices_.size() * sizeof(QVector3D)));
+    bondBuffer_.allocate(bondVertices_.data(), static_cast<int>(bondVertices_.size() * sizeof(BondVertex)));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(QVector3D), nullptr);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(BondVertex), reinterpret_cast<void*>(offsetof(BondVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(BondVertex), reinterpret_cast<void*>(offsetof(BondVertex, color)));
     bondBuffer_.release();
     bondVao_.release();
+
+    ribbonVao_.bind();
+    ribbonBuffer_.bind();
+    ribbonBuffer_.allocate(ribbonVertices_.data(), static_cast<int>(ribbonVertices_.size() * sizeof(RibbonVertex)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RibbonVertex), reinterpret_cast<void*>(offsetof(RibbonVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(RibbonVertex), reinterpret_cast<void*>(offsetof(RibbonVertex, color)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(RibbonVertex), reinterpret_cast<void*>(offsetof(RibbonVertex, normal)));
+    ribbonBuffer_.release();
+    ribbonVao_.release();
     uploadedGeneration_ = scene_->generation();
 }
 
 void MolecularViewport::releaseGlResources() {
+    transparencyBuffer_.reset();
+    compositeVao_.destroy();
+    compositeProgram_.reset();
     atomVao_.destroy();
     bondVao_.destroy();
+    ribbonVao_.destroy();
     atomBuffer_.destroy();
     bondBuffer_.destroy();
+    ribbonBuffer_.destroy();
     atomProgram_.reset();
     bondProgram_.reset();
+    ribbonProgram_.reset();
 }
 
 QMatrix4x4 MolecularViewport::modelViewMatrix() const {
@@ -231,11 +499,29 @@ QMatrix4x4 MolecularViewport::projectionMatrix() const {
 }
 
 void MolecularViewport::fitToScene() {
-    const auto molecule = scene_->molecule();
-    if (molecule) {
-        const auto center = molecule->center();
-        sceneCenter_ = QVector3D(center.x, center.y, center.z);
-        sceneRadius_ = molecule->radius();
+    QVector3D minimum;
+    QVector3D maximum;
+    bool hasAtoms = false;
+    for (const auto& object : scene_->objects()) {
+        if (!object.visible || object.opacity <= 0.0 || !object.molecule) continue;
+        for (const auto& atom : object.molecule->atoms()) {
+            const QVector3D point(atom.position.x, atom.position.y, atom.position.z);
+            if (!hasAtoms) {
+                minimum = maximum = point;
+                hasAtoms = true;
+            } else {
+                minimum.setX(std::min(minimum.x(), point.x()));
+                minimum.setY(std::min(minimum.y(), point.y()));
+                minimum.setZ(std::min(minimum.z(), point.z()));
+                maximum.setX(std::max(maximum.x(), point.x()));
+                maximum.setY(std::max(maximum.y(), point.y()));
+                maximum.setZ(std::max(maximum.z(), point.z()));
+            }
+        }
+    }
+    if (hasAtoms) {
+        sceneCenter_ = (minimum + maximum) * 0.5F;
+        sceneRadius_ = std::max(1.0F, (maximum - minimum).length() * 0.5F);
         distance_ = std::max(6.0F, sceneRadius_ * 3.0F);
         pan_ = {};
     }
@@ -245,6 +531,65 @@ void MolecularViewport::fitToScene() {
 void MolecularViewport::setOrthographic(bool orthographic) {
     orthographic_ = orthographic;
     update();
+}
+
+void MolecularViewport::setViewPreset(ViewPreset preset) {
+    switch (preset) {
+    case ViewPreset::Front: yaw_ = 0.0F; pitch_ = 0.0F; break;
+    case ViewPreset::Back: yaw_ = 180.0F; pitch_ = 0.0F; break;
+    case ViewPreset::Left: yaw_ = -90.0F; pitch_ = 0.0F; break;
+    case ViewPreset::Right: yaw_ = 90.0F; pitch_ = 0.0F; break;
+    case ViewPreset::Top: yaw_ = 0.0F; pitch_ = -90.0F; break;
+    case ViewPreset::Bottom: yaw_ = 0.0F; pitch_ = 90.0F; break;
+    }
+    emit cameraChanged();
+    update();
+}
+
+void MolecularViewport::setLabelMode(LabelMode mode) {
+    labelMode_ = mode;
+    update();
+}
+
+void MolecularViewport::drawLabels(const QMatrix4x4& mvp) {
+    if (labelMode_ == LabelMode::None) return;
+    const auto selected = scene_->selectedObjectId();
+    const auto object = selected ? scene_->object(*selected) : std::nullopt;
+    if (!object || !object->visible || object->opacity <= 0.0) return;
+    const auto atoms = scene_->selectedAtoms();
+    if (atoms.empty()) return;
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QFont font = painter.font();
+    font.setPointSizeF(std::max(9.0, font.pointSizeF()));
+    painter.setFont(font);
+    std::unordered_set<std::string> renderedResidues;
+    std::size_t rendered = 0;
+    for (const auto& atom : atoms) {
+        if (rendered >= 200) break;
+        QString label;
+        if (labelMode_ == LabelMode::SelectedAtoms) {
+            label = QStringLiteral("%1 %2:%3").arg(QString::fromStdString(atom.name),
+                                                    QString::fromStdString(atom.residueName)).arg(atom.residueId);
+        } else {
+            const auto key = atom.chainId + ":" + std::to_string(atom.residueId) + ":" + atom.residueName;
+            if (!renderedResidues.insert(key).second) continue;
+            label = QStringLiteral("%1 %2 %3").arg(QString::fromStdString(atom.chainId.empty() ? "-" : atom.chainId),
+                                                    QString::fromStdString(atom.residueName)).arg(atom.residueId);
+        }
+        const QVector4D clip = mvp * QVector4D(atom.position.x, atom.position.y, atom.position.z, 1.0F);
+        if (clip.w() <= 0.0F) continue;
+        const QVector3D ndc = clip.toVector3DAffine();
+        if (ndc.z() < -1.0F || ndc.z() > 1.0F) continue;
+        const QPointF position((ndc.x() * 0.5F + 0.5F) * width() + 7.0F,
+                               (1.0F - (ndc.y() * 0.5F + 0.5F)) * height() - 7.0F);
+        const QRectF bounds = painter.fontMetrics().boundingRect(label).adjusted(-4.0, -2.0, 4.0, 2.0);
+        const QRectF background(position + bounds.topLeft(), bounds.size());
+        painter.fillRect(background, QColor(8, 12, 18, 205));
+        painter.setPen(QColor(235, 240, 248));
+        painter.drawText(position, label);
+        ++rendered;
+    }
 }
 
 void MolecularViewport::mousePressEvent(QMouseEvent* event) {
@@ -281,38 +626,48 @@ void MolecularViewport::wheelEvent(QWheelEvent* event) {
 }
 
 void MolecularViewport::pickAtom(const QPoint& point) {
-    const auto molecule = scene_->molecule();
-    if (!molecule) return;
     const auto mvp = projectionMatrix() * modelViewMatrix();
     float bestDistance = 14.0F * 14.0F;
     float bestDepth = std::numeric_limits<float>::max();
-    std::optional<std::uint64_t> best;
-    for (const auto& atom : molecule->atoms()) {
-        const QVector4D clip = mvp * QVector4D(atom.position.x, atom.position.y, atom.position.z, 1.0F);
-        if (clip.w() <= 0.0F) continue;
-        const QVector3D ndc = clip.toVector3DAffine();
-        const float x = (ndc.x() * 0.5F + 0.5F) * width();
-        const float y = (1.0F - (ndc.y() * 0.5F + 0.5F)) * height();
-        const float dx = x - point.x();
-        const float dy = y - point.y();
-        const float d2 = dx * dx + dy * dy;
-        if (d2 <= bestDistance && ndc.z() < bestDepth) {
-            bestDistance = d2;
-            bestDepth = ndc.z();
-            best = atom.id;
+    std::optional<ObjectId> bestObject;
+    std::optional<std::uint64_t> bestAtom;
+    for (const auto& object : scene_->objects()) {
+        if (!object.visible || object.opacity <= 0.0 || !object.molecule) continue;
+        for (const auto& atom : object.molecule->atoms()) {
+            if (object.representation == Representation::CAlphaTrace && atom.name != "CA") continue;
+            if (object.representation == Representation::Backbone && atom.name != "N" && atom.name != "CA" && atom.name != "C") continue;
+            if ((object.representation == Representation::Cartoon || object.representation == Representation::Ribbon) && atom.name != "CA") continue;
+            const QVector4D clip = mvp * QVector4D(atom.position.x, atom.position.y, atom.position.z, 1.0F);
+            if (clip.w() <= 0.0F) continue;
+            const QVector3D ndc = clip.toVector3DAffine();
+            const float x = (ndc.x() * 0.5F + 0.5F) * width();
+            const float y = (1.0F - (ndc.y() * 0.5F + 0.5F)) * height();
+            const float dx = x - point.x();
+            const float dy = y - point.y();
+            const float d2 = dx * dx + dy * dy;
+            if (d2 <= bestDistance && ndc.z() < bestDepth) {
+                bestDistance = d2;
+                bestDepth = ndc.z();
+                bestObject = object.id;
+                bestAtom = atom.id;
+            }
         }
     }
-    if (best) emit atomPicked(*best);
+    if (bestObject && bestAtom) emit atomPicked(*bestObject, *bestAtom, QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier));
 }
 
-QVector3D MolecularViewport::colorForAtom(const Atom& atom) const {
-    switch (scene_->colorScheme()) {
+QVector3D MolecularViewport::colorForAtom(const Atom& atom, ColorScheme scheme) {
+    switch (scheme) {
     case ColorScheme::Element: {
         const auto c = elementColor(atom.element);
         return QVector3D(c[0], c[1], c[2]);
     }
     case ColorScheme::Chain: return chainColor(atom.chainId);
     case ColorScheme::Residue: return chainColor(atom.residueName + std::to_string(atom.residueId));
+    case ColorScheme::SecondaryStructure: {
+        const auto color = secondaryStructureColor(atom.secondaryStructure);
+        return QVector3D(color[0], color[1], color[2]);
+    }
     }
     return QVector3D(0.8F, 0.8F, 0.8F);
 }

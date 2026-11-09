@@ -1,5 +1,6 @@
 #include "gui/JuliaConsole.h"
 
+#include <algorithm>
 #include <QHBoxLayout>
 #include <QFont>
 #include <QKeyEvent>
@@ -19,6 +20,14 @@ void ConsoleInput::keyPressEvent(QKeyEvent* event) {
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
         event->modifiers().testFlag(Qt::ControlModifier)) {
         emit executeRequested();
+        return;
+    }
+    if (blockCount() == 1 && event->modifiers() == Qt::NoModifier && event->key() == Qt::Key_Up) {
+        emit previousHistoryRequested();
+        return;
+    }
+    if (blockCount() == 1 && event->modifiers() == Qt::NoModifier && event->key() == Qt::Key_Down) {
+        emit nextHistoryRequested();
         return;
     }
     QPlainTextEdit::keyPressEvent(event);
@@ -50,6 +59,18 @@ JuliaConsole::JuliaConsole(JuliaRuntime* runtime, QWidget* parent) : QWidget(par
     connect(run, &QPushButton::clicked, this, &JuliaConsole::execute);
     connect(clear, &QPushButton::clicked, this, &JuliaConsole::clearConsole);
     connect(input_, &ConsoleInput::executeRequested, this, &JuliaConsole::execute);
+    connect(input_, &ConsoleInput::previousHistoryRequested, this, [this] {
+        if (history_.isEmpty()) return;
+        historyIndex_ = std::max(0, historyIndex_ - 1);
+        input_->setPlainText(history_.at(historyIndex_));
+        input_->moveCursor(QTextCursor::End);
+    });
+    connect(input_, &ConsoleInput::nextHistoryRequested, this, [this] {
+        if (history_.isEmpty()) return;
+        historyIndex_ = std::min(static_cast<int>(history_.size()), historyIndex_ + 1);
+        input_->setPlainText(historyIndex_ == history_.size() ? QString{} : history_.at(historyIndex_));
+        input_->moveCursor(QTextCursor::End);
+    });
 
     if (runtime_ && runtime_->isAvailable()) {
         output_->append(QStringLiteral("<span style='color:#65d18a'>Julia %1 ready.</span>").arg(runtime_->version()));
@@ -65,6 +86,7 @@ void JuliaConsole::execute() {
     const QString source = input_->toPlainText();
     if (source.trimmed().isEmpty() || !runtime_) return;
     history_.append(source);
+    historyIndex_ = history_.size();
     output_->append(QStringLiteral("<span style='color:#90b8f8'>julia&gt;</span> <pre style='margin:2px'>%1</pre>")
                         .arg(source.toHtmlEscaped()));
     const QString result = runtime_->evaluate(source);
