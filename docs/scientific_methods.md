@@ -1,6 +1,6 @@
 # Scientific methods
 
-Structure analyses use the displayed frame. Coordinates and distances are in angstroms, angles are in degrees. Ordinary analysis uses nonperiodic coordinates: unwrap periodic molecules before analysis. The [trajectory tools](trajectories.md) also provide per-frame RMSD and an explicit minimum-image distance for orthogonal cells.
+Structure analyses use the displayed frame. Coordinates and distances are in angstroms, angles are in degrees. Ordinary analysis uses nonperiodic coordinates: unwrap periodic molecules before analysis. The [trajectory tools](trajectories.md) also provide per-frame RMSD, per-atom RMSF, and an explicit minimum-image distance for orthogonal cells.
 
 ## Rigid alignment and RMSD
 
@@ -44,6 +44,10 @@ Dense maps use quadratic time and quadratic bit storage. GUI maps are limited to
 ## Other geometry
 
 Distances, angles, dihedrals, and radius of gyration share the native geometry kernels. Angles with coincident vertices and dihedrals with coincident or collinear bonds are rejected. Radius of gyration is mass-weighted about the center of mass, using common atomic weights with carbon mass as the fallback for an unknown element.
+
+## Trajectory fluctuations
+
+`trajectory_rmsf` calculates the square root of the mean squared displacement of each atom from its mean position, dividing by the number of sampled frames. With alignment enabled, it fits each frame to the specified reference before updating the mean and squared deviations. It accumulates them online, without holding every decoded frame in memory. The resulting values are in angstroms and are paired with stable atom IDs. Both trajectory RMSD and RMSF accept `atom_ids` and `stride` and leave the displayed frame unchanged.
 
 ## Numerical validation
 

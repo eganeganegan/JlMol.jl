@@ -1,6 +1,8 @@
 # Molecular rendering
 
-Choose **Representation > Cartoon** or **Ribbon** for a protein, then **Color > By Secondary Structure**. Annotated helices appear red, sheets yellow, and coil or unannotated residues blue. The selected color scheme also applies to the ribbon mesh; its shape still follows the structural annotations. Use **View > Camera Presets** to change orientation and **View > Labels** to label the current selection.
+Choose **Representation > Cartoon** for broad alpha-helix ribbons, tapered beta-strand arrows, and rounded loops. **Ribbon** gives a continuous band of uniform width instead. Select **Color > By Secondary Structure** for red helices, yellow sheets, and blue coil or unannotated residues. Other color schemes also work without changing the shapes.
+
+Drag with the left button to orbit and with the right or middle button to pan. The orbit preserves fractional pointer motion and rotates continuously through the poles. Wheel and precision trackpad zoom ease toward the requested scale. Use **View > Camera Presets** to change orientation and **View > Labels** to label the current selection.
 
 The importer reads PDB HELIX/SHEET records and helix and strand ranges from uncompressed `.cif` or `.mmcif` files. In mmCIF, label chain and sequence IDs are preferred. Author IDs, including insertion codes, are resolved to label IDs when a range lacks label endpoints. Ambiguous author IDs, incomplete ranges, and cross-chain ranges are skipped. The importer does not infer secondary structure when annotations are absent.
 
@@ -15,4 +17,4 @@ To verify rendering on a native OpenGL window on macOS, run these commands from 
 ./build/jlmol.app/Contents/MacOS/jlmol test/data/secondary.mmcif --graphics-test
 ```
 
-The test compares framebuffer pixels for opaque and translucent representations, checks for rendered helix and sheet colors, reverses the draw order of overlapping objects, and checks that opaque depth prevents translucent fragments from leaking through.
+The test compares framebuffer pixels for opaque and translucent representations, checks for rendered helix and sheet colors, reverses translucent draw order, and checks opaque depth. It also checks fractional orbit and an intermediate frame during trackpad zoom. Set `JLMOL_GRAPHICS_SNAPSHOT` to a new PNG path to save the resulting cartoon view.

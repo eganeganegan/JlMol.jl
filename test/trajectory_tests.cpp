@@ -3,7 +3,9 @@
 
 #include <chemfiles.hpp>
 
+#include <bit>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <stdexcept>
@@ -16,7 +18,7 @@ void check(bool condition, const char* message) {
 
 constexpr std::size_t frameCount = 12;
 constexpr std::size_t atomCount = 12; // Exercise the compressed coordinate path in XTC.
-const std::array<const char*, 5> filenames{"test.xtc", "test.trr", "test.dcd", "variable.xyz", "topology.xyz"};
+const std::array<const char*, 6> filenames{"test.xtc", "test.trr", "test.dcd", "variable.xyz", "topology.xyz", "rotated.xtc"};
 
 void checkApi(int status) {
     if (status != 0) throw std::runtime_error(jlmol_get_last_error());
@@ -48,11 +50,58 @@ chemfiles::Frame makeFrame(std::size_t step, bool full = true) {
     return frame;
 }
 
+#ifdef JLMOL_TEST_ROTATED_CELL_IMPORT
+void checkRotatedCell(const std::filesystem::path& path) {
+    // Write two small XDR frames independently of Chemfiles, which otherwise
+    // would reject the rotated box during test fixture construction as well.
+    {
+        std::ofstream file(path, std::ios::binary);
+        const auto word = [&](std::uint32_t value) {
+            const unsigned char bytes[]{static_cast<unsigned char>(value >> 24),
+                                        static_cast<unsigned char>(value >> 16),
+                                        static_cast<unsigned char>(value >> 8),
+                                        static_cast<unsigned char>(value)};
+            file.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+        };
+        const auto scalar = [&](float value) { word(std::bit_cast<std::uint32_t>(value)); };
+        for (std::uint32_t index = 0; index < 2; ++index) {
+            word(1995); // XTC magic
+            word(3);
+            word(index);
+            scalar(static_cast<float>(index));
+            // Mutually perpendicular basis: a along +y, b along -x, c along +z.
+            for (float v : {0.F, 2.F, 0.F, -2.1F, 0.F, 0.F, 0.F, 0.F, 2.2F}) scalar(v);
+            word(3);
+            const auto shift = 0.1F * static_cast<float>(index);
+            for (float v : {0.F, shift, 0.F, 0.F, shift + 1.9F, 0.F, -0.1F, shift, 0.F}) scalar(v);
+        }
+        check(file.good(), "Could not write the rotated XTC fixture");
+    }
+    jlmol::Trajectory trajectory(path, 3);
+    check(trajectory.frameCount() == 2, "Wrong rotated XTC frame count");
+    const auto frame = trajectory.readFrame(1);
+    const auto& cell = frame->metadata.cell;
+    check(cell[0] == 0 && cell[4] == 0 && std::abs(cell[1] - 20.0) < 1e-5 &&
+          std::abs(cell[3] + 21.0) < 1e-5 && std::abs(cell[8] - 22.0) < 1e-5,
+          "Rotated XTC basis was not preserved");
+    check(frame->positions[1].x == 0 && std::abs(frame->positions[1].y - 20.0) < 1e-5,
+          "Rotated XTC coordinates were altered");
+    chemfiles::Trajectory reader(path.string());
+    const auto source = reader.read_step(1);
+    const auto wrapped = source.cell().wrap({0.0, 19.0, 0.0});
+    check(std::abs(wrapped[1] + 1.0) < 1e-5, "Periodic geometry did not follow the rotated box");
+    std::cout << "rotated.xtc: box basis, coordinates, and periodic geometry preserved\n";
+}
+#endif
+
 } // namespace
 
 int main() {
     try {
         TemporaryFiles files;
+#ifdef JLMOL_TEST_ROTATED_CELL_IMPORT
+        checkRotatedCell(files.dir / filenames[5]);
+#endif
         const auto topology = files.dir / filenames[4];
         {
             chemfiles::Trajectory writer(topology.string(), 'w');

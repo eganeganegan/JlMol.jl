@@ -6,9 +6,12 @@
 #include "gui/MolecularViewport.h"
 #include "gui/ScriptEditor.h"
 #include "gui/TrajectoryPanel.h"
+#include "gui/TrajectoryAnalysisPanel.h"
 
 #include <QActionGroup>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -25,6 +28,8 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMetaObject>
+#include <QMouseEvent>
+#include <QPushButton>
 #include <QSettings>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -38,6 +43,9 @@
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
+
+#include <cmath>
 
 namespace jlmol {
 namespace {
@@ -211,6 +219,10 @@ void MainWindow::createDocks() {
     analysisLayout->addStretch();
     analysisDock_ = makeDock(this, QStringLiteral("Analysis Workspace"), QStringLiteral("AnalysisDock"), analysis, Qt::BottomDockWidgetArea);
     analysisDock_->hide();
+    trajectoryAnalysis_ = new TrajectoryAnalysisPanel(scene_, dispatcher_, &juliaRuntime_, this);
+    trajectoryAnalysisDock_ = makeDock(this, QStringLiteral("Trajectory Analysis"), QStringLiteral("TrajectoryAnalysisDock"),
+                                       trajectoryAnalysis_, Qt::BottomDockWidgetArea);
+    trajectoryAnalysisDock_->hide();
 }
 
 void MainWindow::chooseObjectOpacity(ObjectId id) {
@@ -296,6 +308,7 @@ void MainWindow::createMenusAndToolbar() {
 
     auto* analysisMenu = menuBar()->addMenu(QStringLiteral("&Analysis"));
     analysisMenu->addAction(analysisDock_->toggleViewAction());
+    analysisMenu->addAction(trajectoryAnalysisDock_->toggleViewAction());
     analysisMenu->addAction(QStringLiteral("Show Radius of Gyration"), this, [this] {
         const auto molecule = scene_->molecule();
         if (!molecule) {
@@ -624,6 +637,44 @@ bool MainWindow::runGraphicsSelfTest(QString* report) {
     checks << QStringLiteral("Changed pixels at the opaque surface: %1").arg(leakedPixels);
     passed &= leakedPixels == 0;
     (void)scene_->closeObject(overlap);
+
+    const auto center = QPointF(viewport_->rect().center());
+    const auto finish = center + QPointF(39.25, 23.75);
+    QMouseEvent press(QEvent::MouseButtonPress, center, viewport_->mapToGlobal(center.toPoint()),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent drag(QEvent::MouseMove, finish, viewport_->mapToGlobal(finish.toPoint()),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, finish, viewport_->mapToGlobal(finish.toPoint()),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport_, &press);
+    QCoreApplication::sendEvent(viewport_, &drag);
+    QCoreApplication::sendEvent(viewport_, &release);
+    const auto orbited = grab();
+    const bool orbitPassed = difference(colored, orbited, 12) > 40;
+    int zoomUpdates = 0;
+    QImage intermediate;
+    QEventLoop zoomEvents;
+    connect(viewport_, &MolecularViewport::cameraChanged, &zoomEvents, [&] {
+        if (++zoomUpdates == 1) intermediate = grab();
+    });
+    QWheelEvent wheel(center, viewport_->mapToGlobal(center.toPoint()), QPoint(0, 155), QPoint(),
+                      Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QCoreApplication::sendEvent(viewport_, &wheel);
+    QTimer::singleShot(420, &zoomEvents, &QEventLoop::quit);
+    zoomEvents.exec();
+    const auto zoomed = grab();
+    const bool zoomPassed = zoomUpdates > 2 && difference(orbited, intermediate, 12) > 40 &&
+                           difference(intermediate, zoomed, 12) > 40;
+    checks << QStringLiteral("Fractional orbit: %1; eased trackpad zoom: %2 (%3 updates)")
+        .arg(orbitPassed ? QStringLiteral("passed") : QStringLiteral("failed"),
+             zoomPassed ? QStringLiteral("passed") : QStringLiteral("failed")).arg(zoomUpdates);
+    passed &= orbitPassed && zoomPassed;
+    const auto snapshotPath = qEnvironmentVariable("JLMOL_GRAPHICS_SNAPSHOT");
+    if (!snapshotPath.isEmpty()) {
+        const bool saved = zoomed.save(snapshotPath);
+        checks << QStringLiteral("Cartoon preview: %1").arg(saved ? snapshotPath : QStringLiteral("could not save"));
+        passed &= saved;
+    }
     (void)scene_->setRepresentation(*id, object->representation);
     (void)scene_->setColorScheme(*id, object->colorScheme);
     (void)scene_->setObjectOpacity(*id, object->opacity);
@@ -658,6 +709,7 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
         "@assert trajectory_info(mol).frame == 3\n"
         "@assert trajectory_rmsd(mol; align=false) ≈ [0, 1, 2]\n"
         "@assert maximum(trajectory_rmsd(mol)) < 1e-6\n"
+        "@assert maximum(trajectory_rmsf(mol).values) < 1e-6\n"
         "setframe!(mol, 1)\n"
         "println(\"trajectory Julia checks passed\")"));
     const bool bridge = script.contains(QStringLiteral("trajectory Julia checks passed"));
@@ -681,6 +733,120 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
                            playback ? QStringLiteral("passed") : QStringLiteral("failed"));
     }
     return seek && rendered && bridge && reset && playback;
+}
+
+bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
+    const auto active = scene_->activeObjectId();
+    const auto object = active ? scene_->object(*active) : std::nullopt;
+    if (!object || !object->trajectory || object->trajectory->frameCount() != 3 ||
+        object->molecule->atoms().size() != 3) {
+        if (report) *report = QStringLiteral("Expected the three-frame water analysis fixture");
+        return false;
+    }
+    auto* plot = trajectoryAnalysis_->findChild<TrajectoryPlot*>(QStringLiteral("TrajectoryPlot"));
+    auto* align = trajectoryAnalysis_->findChild<QCheckBox*>(QStringLiteral("TrajectoryAlign"));
+    auto* selectedOnly = trajectoryAnalysis_->findChild<QCheckBox*>(QStringLiteral("TrajectorySelectedOnly"));
+    auto* metric = trajectoryAnalysis_->findChild<QComboBox*>(QStringLiteral("TrajectoryMetric"));
+    auto* stride = trajectoryAnalysis_->findChild<QSpinBox*>(QStringLiteral("TrajectoryStride"));
+    auto* clusters = trajectoryAnalysis_->findChild<QSpinBox*>(QStringLiteral("TrajectoryClusters"));
+    auto* calculate = trajectoryAnalysis_->findChild<QPushButton*>(QStringLiteral("TrajectoryCalculate"));
+    auto* timeline = trajectoryPanel_->findChild<QSlider*>(QStringLiteral("TrajectorySlider"));
+    if (!plot || !align || !selectedOnly || !metric || !stride || !clusters || !calculate || !timeline) {
+        if (report) *report = QStringLiteral("Could not locate trajectory analysis controls");
+        return false;
+    }
+    trajectoryAnalysisDock_->show();
+    trajectoryAnalysisDock_->raise();
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1e-7; };
+    const auto click = [plot](std::size_t index) {
+        if (index >= plot->values().size()) return;
+        const auto position = plot->pointPosition(index);
+        QMouseEvent event(QEvent::MouseButtonPress, position, plot->mapToGlobal(position.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(plot, &event);
+    };
+
+    align->setChecked(false);
+    stride->setValue(2);
+    calculate->click();
+    const auto values = plot->values();
+    const bool sampled = values.size() == 2 && near(values.front(), 0.0) && near(values.back(), 2.0 / std::sqrt(3.0));
+    click(1);
+    const bool sought = scene_->object(*active)->frameIndex == 2 && timeline->value() == 3 &&
+                        plot->markers() == std::vector<std::size_t>{3};
+    const auto drawnAtThree = plot->grab().toImage();
+    timeline->setValue(2);
+    const auto drawnAtTwo = plot->grab().toImage();
+    const bool followed = plot->values() == values && plot->markers() == std::vector<std::size_t>{2} &&
+                          !drawnAtThree.isNull() && drawnAtTwo.size() == drawnAtThree.size() && drawnAtTwo != drawnAtThree;
+
+    const auto oxygen = object->molecule->atoms()[0].id;
+    const auto hydrogen = object->molecule->atoms()[1].id;
+    selectedOnly->setChecked(true);
+    dispatcher_->selectAtom(*active, oxygen);
+    calculate->click();
+    const bool oxygenScope = plot->values().size() == 2 && near(plot->values().back(), 2.0);
+    dispatcher_->selectAtom(*active, hydrogen);
+    const bool staleCleared = plot->values().empty();
+    QEventLoop events;
+    QTimer poll;
+    connect(&poll, &QTimer::timeout, &events, [&] { if (!plot->values().empty()) events.quit(); });
+    poll.start(10);
+    QTimer::singleShot(2000, &events, &QEventLoop::quit);
+    events.exec();
+    const bool selectionUpdated = plot->values().size() == 2 && near(plot->values().back(), 0.0) &&
+                                  scene_->object(*active)->frameIndex == 1;
+
+    selectedOnly->setChecked(false);
+    metric->setCurrentIndex(1);
+    stride->setValue(1);
+    calculate->click();
+    const auto fluctuations = plot->values();
+    const bool measured = fluctuations.size() == 3 && near(fluctuations[0], std::sqrt(10.0 / 9.0)) &&
+                          near(fluctuations[1], 0.0) && near(fluctuations[2], 0.0);
+    click(0);
+    const bool atomLinked = scene_->selectedAtomId() == oxygen && plot->markers() == std::vector<std::size_t>{1};
+
+    metric->setCurrentIndex(2);
+    clusters->setValue(2);
+    calculate->click();
+    const auto pcs = plot->values();
+    const bool projected = pcs.size() == 3 &&
+        *std::max_element(pcs.begin(), pcs.end()) - *std::min_element(pcs.begin(), pcs.end()) > 0.1 &&
+        plot->groups().size() == 3 && plot->groups().front() != plot->groups().back();
+    click(0);
+    const bool scatterSought = timeline->value() == 1 && plot->markers() == std::vector<std::size_t>{1};
+    const auto pcaAtOne = plot->grab().toImage();
+    timeline->setValue(3);
+    const auto pcaAtThree = plot->grab().toImage();
+    const bool scatterFollowed = plot->values() == pcs && plot->markers() == std::vector<std::size_t>{3} &&
+                                 !pcaAtOne.isNull() && pcaAtThree.size() == pcaAtOne.size() && pcaAtThree != pcaAtOne;
+    stride->setValue(2);
+    calculate->click();
+    timeline->setValue(2);
+    const bool unsampledPca = plot->values().size() == 2 && plot->markers().empty();
+    click(1);
+    const bool sampledPca = timeline->value() == 3 && plot->markers() == std::vector<std::size_t>{2};
+    const bool pcaLink = projected && scatterSought && scatterFollowed && unsampledPca && sampledPca;
+
+    const auto staticId = scene_->addMolecule(std::make_shared<Molecule>(*object->molecule));
+    dispatcher_->setActiveObject(staticId);
+    const bool invalidated = plot->values().empty() && !calculate->isEnabled();
+    dispatcher_->closeObject(staticId);
+
+    const bool frameLink = sampled && sought && followed;
+    const bool selectionLink = oxygenScope && staleCleared && selectionUpdated;
+    const bool atomLink = measured && atomLinked;
+    if (report) {
+        const auto verdict = [](bool pass) { return pass ? QStringLiteral("passed") : QStringLiteral("failed"); };
+        *report = QStringLiteral("Sampled RMSD and bidirectional frame link: %1\n"
+                                 "Selected-atom recalculation: %2\nRMSF and atom link: %3\n"
+                                 "PCA scatter, clusters, and bidirectional frame link: %4\n"
+                                 "Object-switch invalidation: %5")
+                      .arg(verdict(frameLink), verdict(selectionLink), verdict(atomLink),
+                           verdict(pcaLink), verdict(invalidated));
+    }
+    return frameLink && selectionLink && atomLink && pcaLink && invalidated;
 }
 
 bool MainWindow::runScriptEditorSelfTest(QString* report) {
@@ -791,6 +957,7 @@ void MainWindow::refreshSceneUi() {
 
 void MainWindow::refreshFrameUi() {
     trajectoryPanel_->refresh();
+    trajectoryAnalysis_->refresh();
     analysisMapScroll_->hide();
     if (const auto molecule = scene_->molecule()) {
         analysisSummary_->setText(QStringLiteral("<h3>%1</h3><p>Radius of gyration: <b>%2 Å</b></p>"

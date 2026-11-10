@@ -11,6 +11,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(JLMOL_ENABLE_JULIA "Build the embedded Julia runtime" ON)
 option(JLMOL_BUILD_TESTS "Build native tests" ON)
 option(JLMOL_USE_CHEMFILES "Use Chemfiles for molecular file import" ON)
+option(JLMOL_USE_SYSTEM_CHEMFILES "Use an installed Chemfiles instead of the patched bundled version" OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 
@@ -21,9 +22,11 @@ if(APPLE AND EXISTS "/opt/homebrew/opt/zlib/lib/libz.dylib")
 endif()
 
 if(JLMOL_USE_CHEMFILES)
-    find_package(chemfiles 0.10 CONFIG QUIET)
-    if(NOT TARGET chemfiles)
+    if(JLMOL_USE_SYSTEM_CHEMFILES)
+        find_package(chemfiles 0.10 CONFIG REQUIRED)
+    else()
         include(FetchContent)
+        find_package(Git REQUIRED)
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies statically" FORCE)
         set(CHFL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(CHFL_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
@@ -37,6 +40,12 @@ if(JLMOL_USE_CHEMFILES)
             GIT_REPOSITORY https://github.com/chemfiles/chemfiles.git
             GIT_TAG 843e5949db829dcf76bac1ca3521cc8e10f9ea4e
             GIT_SHALLOW TRUE
+            PATCH_COMMAND
+                "${CMAKE_COMMAND}"
+                "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+                "-DSOURCE_DIR=<SOURCE_DIR>"
+                "-DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/chemfiles-rotated-cell.patch"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ApplyDependencyPatch.cmake"
         )
         FetchContent_MakeAvailable(chemfiles)
         # Chemfiles enables glibc large-file extensions unconditionally. macOS
@@ -82,7 +91,9 @@ set(JLMOL_APP_SOURCES
     native/gui/MainWindow.cpp
     native/gui/MolecularViewport.cpp
     native/gui/ScriptEditor.cpp
+    native/gui/TrajectoryAnalysisPanel.cpp
     native/gui/TrajectoryPanel.cpp
+    native/renderer/CartoonGeometry.cpp
     native/scripting/JuliaRuntime.cpp
 )
 
@@ -147,6 +158,9 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
     if(TARGET chemfiles)
         add_executable(jlmol_trajectory_tests test/trajectory_tests.cpp)
         target_link_libraries(jlmol_trajectory_tests PRIVATE jlmol_core chemfiles)
+        if(NOT JLMOL_USE_SYSTEM_CHEMFILES)
+            target_compile_definitions(jlmol_trajectory_tests PRIVATE JLMOL_TEST_ROTATED_CELL_IMPORT=1)
+        endif()
         add_test(NAME native_trajectory COMMAND jlmol_trajectory_tests)
     endif()
 endif()

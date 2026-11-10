@@ -1,6 +1,6 @@
 # Building JlMol
 
-Requirements: CMake 3.24+, Ninja, a C++20 compiler, Qt 6 Base (Widgets and OpenGLWidgets), zlib, and Julia 1.10 or newer. CMake fetches the pinned Chemfiles 0.10.4 source on the first configure unless a compatible installed package is found. Set `JLMOL_USE_CHEMFILES=OFF` for the PDB-only fallback build.
+Requirements: CMake 3.24+, Ninja, Git, a C++20 compiler, Qt 6 Base (Widgets and OpenGLWidgets), zlib, and Julia 1.10 or newer. CMake fetches pinned Chemfiles 0.10.4 and applies the rotated-cell import patch. Set `JLMOL_USE_SYSTEM_CHEMFILES=ON` to use an installed package instead; a system build without that patch may reject rotated orthogonal boxes. Set `JLMOL_USE_CHEMFILES=OFF` for the PDB-only fallback build.
 
 On Apple Silicon with Homebrew:
 

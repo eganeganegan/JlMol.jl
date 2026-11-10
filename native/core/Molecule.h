@@ -44,6 +44,7 @@ struct TraceSegment {
     Vec3 second;
     SecondaryStructure secondaryStructure{SecondaryStructure::Coil};
     std::size_t sourceAtom{};
+    bool startsChain{};
 };
 
 struct RibbonFrame {
@@ -53,6 +54,7 @@ struct RibbonFrame {
     Vec3 normal;
     SecondaryStructure secondaryStructure{SecondaryStructure::Coil};
     std::size_t sourceAtom{};
+    bool startsChain{};
 };
 
 class Molecule {

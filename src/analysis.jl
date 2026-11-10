@@ -6,14 +6,20 @@ struct StructureSnapshot
     atom_names::Vector{String}
 end
 
-"Copy coordinates and atom identities without borrowing native memory."
-function snapshot(structure::ActiveStructure = active_structure())
+function _coordinate_snapshot(structure::ActiveStructure)
     count = atom_count(structure)
     coordinates = Matrix{Float64}(undef, 3, count)
     ids = Vector{UInt64}(undef, count)
     _check(ccall(_symbol(:jlmol_copy_object_atoms), Cint,
                  (UInt64, Ptr{Cdouble}, Ptr{UInt64}, Csize_t),
                  structure.id, coordinates, ids, count))
+    return coordinates, ids
+end
+
+"Copy coordinates and atom identities without borrowing native memory."
+function snapshot(structure::ActiveStructure = active_structure())
+    coordinates, ids = _coordinate_snapshot(structure)
+    count = length(ids)
     function field(index, key)
         value = unsafe_string(ccall(_symbol(:jlmol_object_atom_field), Cstring,
                                     (UInt64, Csize_t, Cstring), structure.id, index - 1, key))

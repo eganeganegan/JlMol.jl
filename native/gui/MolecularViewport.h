@@ -11,7 +11,9 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
 #include <QOpenGLWidget>
-#include <QPoint>
+#include <QPointF>
+#include <QQuaternion>
+#include <QTimer>
 #include <memory>
 #include <vector>
 
@@ -78,6 +80,7 @@ private:
     QOpenGLBuffer atomBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer bondBuffer_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer ribbonBuffer_{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer ribbonIndexBuffer_{QOpenGLBuffer::IndexBuffer};
     QOpenGLVertexArrayObject atomVao_;
     QOpenGLVertexArrayObject bondVao_;
     QOpenGLVertexArrayObject ribbonVao_;
@@ -85,13 +88,17 @@ private:
     std::vector<RenderVertex> atoms_;
     std::vector<BondVertex> bondVertices_;
     std::vector<RibbonVertex> ribbonVertices_;
+    std::vector<std::uint32_t> ribbonIndices_;
     std::vector<DrawBatch> batches_;
     std::uint64_t uploadedGeneration_{~std::uint64_t{0}};
-    QPoint lastMousePosition_;
-    QPoint pressPosition_;
-    float yaw_{-25.0F};
-    float pitch_{18.0F};
+    QPointF lastMousePosition_;
+    QPointF pressPosition_;
+    bool dragging_{};
+    QQuaternion orientation_;
     float distance_{30.0F};
+    float zoomTarget_{30.0F};
+    QTimer zoomTimer_;
+    QElapsedTimer zoomClock_;
     QVector3D pan_;
     QVector3D sceneCenter_;
     float sceneRadius_{10.0F};

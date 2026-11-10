@@ -1,0 +1,24 @@
+diff --git a/src/UnitCell.cpp b/src/UnitCell.cpp
+--- a/src/UnitCell.cpp
++++ b/src/UnitCell.cpp
+@@ -162,8 +162,13 @@
+-    auto lengths = calc_lengths_from_cell_matrix(matrix_);
+-    auto angles = calc_angles_from_cell_matrix(matrix_);
+-    if (!is_diagonal(matrix_) && is_orthorhombic(lengths, angles)) {
+-        throw error("orthorhombic cell must have their a vector along x axis, b vector along y axis and c vector along z axis");
+-    }
+-
+-    if (is_diagonal(matrix_)) {
++    const auto diagonal = is_diagonal(matrix_);
++    // Use the general matrix path for rotated orthogonal cells. Keep the
++    // original basis so that the cell and atom coordinates stay aligned.
++    if (!diagonal && is_roughly_zero(determinant)) {
++        auto lengths = calc_lengths_from_cell_matrix(matrix_);
++        auto angles = calc_angles_from_cell_matrix(matrix_);
++        if (is_orthorhombic(lengths, angles)) {
++            throw error("non-axis-aligned unit cell has zero volume");
++        }
++    }
++
++    if (diagonal) {
+         if (is_roughly_zero(matrix_[0][0]) && is_roughly_zero(matrix_[1][1]) && is_roughly_zero(matrix_[2][2])) {

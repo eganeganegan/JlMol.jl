@@ -22,6 +22,14 @@ bool JuliaRuntime::initialize(QString* error) {
         ownsRuntime_ = true;
         const char* bootstrap = R"JULIA(
             module JlMolSession end
+            module JlMolAnalysisSession end
+            function __jlmol_series__(source::String)
+                try
+                    return Base.include_string(Main.JlMolAnalysisSession, source, "JlMol analysis")::Vector{Float64}
+                catch exception
+                    return sprint(showerror, exception)
+                end
+            end
             function __jlmol_eval__(source::String)
                 stream = Pipe()
                 try
@@ -87,6 +95,46 @@ QString JuliaRuntime::evaluate(const QString& source) {
 #else
     (void)source;
     return QStringLiteral("Julia is not available in this build.");
+#endif
+}
+
+NumericSeries JuliaRuntime::evaluateSeries(const QString& source) {
+#if defined(JLMOL_HAS_JULIA)
+    std::scoped_lock lock(evaluationMutex_);
+    if (!available_) return {{}, QStringLiteral("Julia is not available.")};
+    const auto utf8 = source.toUtf8();
+    jl_value_t* argument = jl_cstr_to_string(utf8.constData());
+    jl_value_t* result = nullptr;
+    JL_GC_PUSH2(&argument, &result);
+    NumericSeries series;
+    try {
+        auto* evaluator = jl_get_function(jl_main_module, "__jlmol_series__");
+        result = evaluator ? jl_call1(evaluator, argument) : nullptr;
+        if (!result || jl_exception_occurred()) {
+            series.error = QStringLiteral("Julia analysis did not return a result.");
+        } else if (jl_is_string(result)) {
+            series.error = QString::fromUtf8(jl_string_ptr(result));
+        } else if (jl_is_array(result) && jl_array_ndims(result) == 1 && jl_array_eltype(result) == jl_float64_type) {
+            auto* array = reinterpret_cast<jl_array_t*>(result);
+            const auto size = jl_array_len(array);
+#if JULIA_VERSION_MAJOR > 1 || JULIA_VERSION_MINOR >= 11
+            const auto* values = jl_array_data(array, double);
+#else
+            const auto* values = static_cast<const double*>(jl_array_data(array));
+#endif
+            if (size > 0) series.values.assign(values, values + size);
+        } else {
+            series.error = QStringLiteral("Julia analysis did not return a Float64 vector.");
+        }
+    } catch (...) {
+        JL_GC_POP();
+        throw;
+    }
+    JL_GC_POP();
+    return series;
+#else
+    (void)source;
+    return {{}, QStringLiteral("Julia is not available in this build.")};
 #endif
 }
 

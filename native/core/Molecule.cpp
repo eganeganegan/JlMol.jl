@@ -416,7 +416,8 @@ std::vector<TraceSegment> Molecule::smoothCAlphaTrace(unsigned subdivisions) con
             for (unsigned step = 1; step <= subdivisions; ++step) {
                 const auto next = interpolate(p0, p1, p2, p3, static_cast<float>(step) / static_cast<float>(subdivisions));
                 result.push_back(TraceSegment{previous, next, chain[index]->secondaryStructure,
-                                              static_cast<std::size_t>(chain[index] - atoms_.data())});
+                                              static_cast<std::size_t>(chain[index] - atoms_.data()),
+                                              index == 0 && step == 1});
                 previous = next;
             }
         }
@@ -446,7 +447,8 @@ std::vector<RibbonFrame> Molecule::ribbonFrames(unsigned subdivisions) const {
         const float joinDx = segment.first.x - previousEnd.x;
         const float joinDy = segment.first.y - previousEnd.y;
         const float joinDz = segment.first.z - previousEnd.z;
-        const bool contiguous = hasPrevious && joinDx * joinDx + joinDy * joinDy + joinDz * joinDz < 1.0e-5F;
+        const bool contiguous = hasPrevious && !segment.startsChain &&
+            joinDx * joinDx + joinDy * joinDy + joinDz * joinDz < 1.0e-5F;
         Vec3 side;
         if (contiguous) {
             const float along = dot(previousSide, tangent);
@@ -458,7 +460,7 @@ std::vector<RibbonFrame> Molecule::ribbonFrames(unsigned subdivisions) const {
         }
         const Vec3 normal = normalized(cross(side, tangent));
         frames.push_back(RibbonFrame{segment.first, segment.second, side, normal, segment.secondaryStructure,
-                                     segment.sourceAtom});
+                                     segment.sourceAtom, segment.startsChain});
         previousSide = side;
         previousEnd = segment.second;
         hasPrevious = true;

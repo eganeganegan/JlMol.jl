@@ -19,6 +19,7 @@ class JuliaConsole;
 class MolecularViewport;
 class ScriptEditor;
 class TrajectoryPanel;
+class TrajectoryAnalysisPanel;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -31,6 +32,7 @@ public:
     bool runIntegrationSelfTest(QString* report = nullptr);
     bool runGraphicsSelfTest(QString* report = nullptr);
     bool runTrajectorySelfTest(QString* report = nullptr);
+    bool runLinkedAnalysisSelfTest(QString* report = nullptr);
     bool runScriptEditorSelfTest(QString* report = nullptr);
 
 protected:
@@ -67,6 +69,8 @@ private:
     QDockWidget* analysisDock_{};
     QDockWidget* trajectoryDock_{};
     TrajectoryPanel* trajectoryPanel_{};
+    QDockWidget* trajectoryAnalysisDock_{};
+    TrajectoryAnalysisPanel* trajectoryAnalysis_{};
     QLabel* atomCountLabel_{};
     JuliaRuntime juliaRuntime_;
     JuliaConsole* juliaConsole_{};

@@ -25,9 +25,52 @@ end
     @test minimum_image_displacement(delta + cell * [3, -2, 2], cell) ≈ expected
     rotation = [0.0 -1.0 0.0; 1.0 0.0 0.0; 0.0 0.0 1.0]
     @test minimum_image_displacement(rotation * delta, rotation * cell) ≈ rotation * expected
+    c, s = cos(0.37), sin(0.37)
+    u, v = cos(0.49), sin(0.49)
+    tilted = [c -s 0; s c 0; 0 0 1] * [1 0 0; 0 u -v; 0 v u]
+    @test minimum_image_displacement(tilted * delta, Float64.(Float32.(tilted * cell))) ≈ tilted * expected atol=1e-6
     @test_throws ArgumentError minimum_image_displacement(delta, zeros(3, 3))
     @test_throws ArgumentError minimum_image_displacement(delta, [10.0 3.0 0.0; 0.0 8.0 0.0; 0.0 0.0 12.0])
     @test_throws ArgumentError minimum_image_displacement([NaN, 0.0, 0.0], cell)
+end
+
+@testset "Trajectory fluctuations and atom scope" begin
+    first = [0.0 10; 0 0; 0 0]
+    second = first + [2.0 0; 0 0; 0 0]
+    third = first + [4.0 0; 0 0; 0 0]
+    @test JlMol._rmsf((first, second, third)) ≈ [sqrt(8 / 3), 0]
+    @test JlMol._rmsf((first,)) == [0, 0]
+    @test JlMol._rmsf((first .+ 1e9, second .+ 1e9, third .+ 1e9)) ≈ [sqrt(8 / 3), 0]
+    @test_throws ArgumentError JlMol._rmsf(())
+    @test_throws ArgumentError JlMol._rmsf((first, zeros(3, 1)))
+    @test JlMol._trajectory_atom_indices(UInt64[11, 12, 13], [13, 11]) == [3, 1]
+    @test_throws ArgumentError JlMol._trajectory_atom_indices(UInt64[11, 12], [11, 11])
+    @test_throws ArgumentError JlMol._trajectory_atom_indices(UInt64[11, 12], [13])
+    @test_throws ArgumentError JlMol._trajectory_atom_indices(UInt64[11, 12], Int[])
+end
+
+@testset "Cartesian PCA and projected clusters" begin
+    coordinates = [2.0 -2 0 0; 0 0 1 -1; 5 5 5 5]
+    pca = JlMol._coordinate_pca(coordinates, 2)
+    @test pca.explained_variance ≈ [8 / 3, 2 / 3]
+    @test pca.explained_fraction ≈ [0.8, 0.2]
+    @test pca.loadings * pca.scores .+ pca.mean_coordinates ≈ coordinates
+    @test pca.loadings' * pca.loadings ≈ Matrix{Float64}(I, 2, 2)
+    @test JlMol._coordinate_pca(coordinates .+ [100, -50, 7], 1).explained_fraction ≈ [0.8]
+    @test JlMol._coordinate_pca(fill(3.0, 3, 4), 2).explained_fraction == [0, 0]
+    @test_throws ArgumentError JlMol._coordinate_pca(ones(3, 1), 2)
+    @test_throws ArgumentError JlMol._coordinate_pca(coordinates, 4)
+    @test_throws ArgumentError JlMol._coordinate_pca(fill(Inf, 3, 4), 2)
+
+    points = [0.0 0 10 10; 0 1 0 1]
+    groups = cluster_conformations(points)
+    @test groups.converged
+    @test groups.assignments == [1, 1, 2, 2]
+    @test groups.centers ≈ [0.0 10; 0.5 0.5]
+    @test groups.representatives == [1, 3]
+    @test !cluster_conformations(points; max_iterations=1).converged
+    @test_throws ArgumentError cluster_conformations(points; k=5)
+    @test_throws ArgumentError cluster_conformations(zeros(2, 4))
 end
 
 @testset "Rigid alignment and RMSD" begin

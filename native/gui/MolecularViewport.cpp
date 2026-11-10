@@ -1,4 +1,5 @@
 #include "gui/MolecularViewport.h"
+#include "renderer/CartoonGeometry.h"
 
 #include <QApplication>
 #include <QMouseEvent>
@@ -129,8 +130,13 @@ in vec3 eyeNormal;
 out vec4 fragColor;
 void main() {
     vec3 n = normalize(eyeNormal);
-    float diffuse = 0.28 + 0.72 * abs(dot(n, normalize(vec3(-0.35, 0.5, 1.0))));
-    fragColor = encodeFragment(vertexColor * diffuse);
+    if (!gl_FrontFacing) n = -n;
+    vec3 key = normalize(vec3(-0.45, 0.60, 1.0));
+    float diffuse = max(0.0, dot(n, key));
+    float fill = max(0.0, dot(n, normalize(vec3(0.7, -0.4, 0.55))));
+    float highlight = diffuse * pow(max(0.0, dot(n, normalize(key + vec3(0, 0, 1)))), 25.0);
+    vec3 lit = vertexColor * (0.34 + 0.57 * diffuse + 0.16 * fill);
+    fragColor = encodeFragment(lit + 0.14 * highlight * mix(vertexColor, vec3(1.0), 0.45));
 }
 )GLSL";
 
@@ -150,37 +156,29 @@ QVector3D chainColor(const std::string& chain) {
                      0.25F + static_cast<float>((hash >> 16U) & 255U) / 510.0F);
 }
 
-void appendRibbonPrism(std::vector<RibbonVertex>& vertices, const RibbonFrame& frame, float halfWidth,
-                       float halfThickness, const QVector3D& color) {
-    const QVector3D a(frame.first.x, frame.first.y, frame.first.z);
-    const QVector3D b(frame.second.x, frame.second.y, frame.second.z);
-    const QVector3D side(frame.side.x, frame.side.y, frame.side.z);
-    const QVector3D normal(frame.normal.x, frame.normal.y, frame.normal.z);
-    const QVector3D tangent = (b - a).normalized();
-    const QVector3D points[] = {
-        a - side * halfWidth - normal * halfThickness, a + side * halfWidth - normal * halfThickness,
-        a + side * halfWidth + normal * halfThickness, a - side * halfWidth + normal * halfThickness,
-        b - side * halfWidth - normal * halfThickness, b + side * halfWidth - normal * halfThickness,
-        b + side * halfWidth + normal * halfThickness, b - side * halfWidth + normal * halfThickness};
-    const auto face = [&vertices, &points, &color](int aIndex, int bIndex, int cIndex, int dIndex, const QVector3D& faceNormal) {
-        for (const int index : {aIndex, bIndex, cIndex, aIndex, cIndex, dIndex}) {
-            vertices.push_back(RibbonVertex{points[index], color, faceNormal});
-        }
-    };
-    face(3, 2, 6, 7, normal);
-    face(0, 4, 5, 1, -normal);
-    face(1, 5, 6, 2, side);
-    face(0, 3, 7, 4, -side);
-    face(0, 1, 2, 3, -tangent);
-    face(4, 7, 6, 5, tangent);
+QQuaternion orientationFor(float yaw, float pitch) {
+    return QQuaternion::fromAxisAndAngle(1, 0, 0, pitch) * QQuaternion::fromAxisAndAngle(0, 1, 0, yaw);
 }
 
 } // namespace
 
 MolecularViewport::MolecularViewport(std::shared_ptr<MolecularScene> scene, QWidget* parent)
-    : QOpenGLWidget(parent), scene_(std::move(scene)) {
+    : QOpenGLWidget(parent), scene_(std::move(scene)), orientation_(orientationFor(-25.F, 18.F)) {
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(480, 320);
+    zoomTimer_.setTimerType(Qt::PreciseTimer);
+    zoomTimer_.setInterval(16);
+    connect(&zoomTimer_, &QTimer::timeout, this, [this] {
+        const auto elapsed = std::clamp(static_cast<float>(zoomClock_.nsecsElapsed()) / 1.0e9F, 0.001F, 0.05F);
+        zoomClock_.restart();
+        distance_ = std::lerp(distance_, zoomTarget_, 1.F - std::exp(-elapsed / 0.042F));
+        if (std::abs(distance_ - zoomTarget_) <= zoomTarget_ * 0.0005F) {
+            distance_ = zoomTarget_;
+            zoomTimer_.stop();
+        }
+        emit cameraChanged();
+        update();
+    });
 }
 
 MolecularViewport::~MolecularViewport() {
@@ -207,6 +205,7 @@ void MolecularViewport::initializeGL() {
     atomBuffer_.create();
     bondBuffer_.create();
     ribbonBuffer_.create();
+    ribbonIndexBuffer_.create();
     atomVao_.create();
     bondVao_.create();
     ribbonVao_.create();
@@ -247,7 +246,12 @@ void MolecularViewport::drawGeometry(const QMatrix4x4& view, const QMatrix4x4& m
             const auto [first, count] = batch.*range;
             if (!count) continue;
             program.setUniformValue("opacity", batch.opacity);
-            glDrawArrays(mode, first, count);
+            if (mode == GL_TRIANGLES) {
+                const auto offset = static_cast<std::uintptr_t>(first) * sizeof(std::uint32_t);
+                glDrawElements(mode, count, GL_UNSIGNED_INT, reinterpret_cast<const void*>(offset));
+            } else {
+                glDrawArrays(mode, first, count);
+            }
         }
     };
     if (!ribbonVertices_.empty()) {
@@ -358,6 +362,7 @@ void MolecularViewport::rebuildGeometry() {
     atoms_.clear();
     bondVertices_.clear();
     ribbonVertices_.clear();
+    ribbonIndices_.clear();
     batches_.clear();
     const auto selectedObject = scene_->selectedObjectId();
     const auto selectedAtomIds = scene_->selectedAtomIds();
@@ -368,7 +373,7 @@ void MolecularViewport::rebuildGeometry() {
         batch.opacity = static_cast<float>(object.opacity);
         batch.atoms.first = static_cast<GLint>(atoms_.size());
         batch.bonds.first = static_cast<GLint>(bondVertices_.size());
-        batch.ribbons.first = static_cast<GLint>(ribbonVertices_.size());
+        batch.ribbons.first = static_cast<GLint>(ribbonIndices_.size());
         const auto& molecule = *object.molecule;
         if (object.representation == Representation::BallAndStick ||
             object.representation == Representation::SpaceFilling ||
@@ -405,19 +410,13 @@ void MolecularViewport::rebuildGeometry() {
             }
         } else if (object.representation == Representation::Cartoon || object.representation == Representation::Ribbon) {
             const bool ribbon = object.representation == Representation::Ribbon;
-            const auto frames = molecule.ribbonFrames(ribbon ? 8U : 6U);
-            ribbonVertices_.reserve(ribbonVertices_.size() + frames.size() * 36U);
-            for (const auto& frame : frames) {
-                float width = ribbon ? 0.42F : 0.28F;
-                if (!ribbon && frame.secondaryStructure == SecondaryStructure::Helix) width = 0.62F;
-                if (!ribbon && frame.secondaryStructure == SecondaryStructure::Sheet) width = 0.78F;
-                appendRibbonPrism(ribbonVertices_, frame, width, ribbon ? 0.07F : 0.10F,
-                                  colorForAtom(molecule.atoms()[frame.sourceAtom], object.colorScheme));
-            }
+            appendCartoonGeometry(molecule, ribbon, [&](std::size_t atom) {
+                return colorForAtom(molecule.atoms()[atom], object.colorScheme);
+            }, ribbonVertices_, ribbonIndices_);
         }
         batch.atoms.count = static_cast<GLsizei>(atoms_.size() - batch.atoms.first);
         batch.bonds.count = static_cast<GLsizei>(bondVertices_.size() - batch.bonds.first);
-        batch.ribbons.count = static_cast<GLsizei>(ribbonVertices_.size() - batch.ribbons.first);
+        batch.ribbons.count = static_cast<GLsizei>(ribbonIndices_.size() - batch.ribbons.first);
         batches_.push_back(batch);
     }
 
@@ -457,6 +456,9 @@ void MolecularViewport::rebuildGeometry() {
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(RibbonVertex), reinterpret_cast<void*>(offsetof(RibbonVertex, normal)));
     ribbonBuffer_.release();
+    ribbonIndexBuffer_.bind();
+    ribbonIndexBuffer_.allocate(ribbonIndices_.data(), static_cast<int>(ribbonIndices_.size() * sizeof(std::uint32_t)));
+    // The element buffer binding is part of the VAO state.
     ribbonVao_.release();
     uploadedGeneration_ = scene_->generation();
 }
@@ -471,6 +473,7 @@ void MolecularViewport::releaseGlResources() {
     atomBuffer_.destroy();
     bondBuffer_.destroy();
     ribbonBuffer_.destroy();
+    ribbonIndexBuffer_.destroy();
     atomProgram_.reset();
     bondProgram_.reset();
     ribbonProgram_.reset();
@@ -480,8 +483,7 @@ QMatrix4x4 MolecularViewport::modelViewMatrix() const {
     QMatrix4x4 view;
     view.translate(pan_);
     view.translate(0.0F, 0.0F, -distance_);
-    view.rotate(pitch_, 1.0F, 0.0F, 0.0F);
-    view.rotate(yaw_, 0.0F, 1.0F, 0.0F);
+    view.rotate(orientation_);
     view.translate(-sceneCenter_);
     return view;
 }
@@ -523,6 +525,8 @@ void MolecularViewport::fitToScene() {
         sceneCenter_ = (minimum + maximum) * 0.5F;
         sceneRadius_ = std::max(1.0F, (maximum - minimum).length() * 0.5F);
         distance_ = std::max(6.0F, sceneRadius_ * 3.0F);
+        zoomTarget_ = distance_;
+        zoomTimer_.stop();
         pan_ = {};
     }
     update();
@@ -535,12 +539,12 @@ void MolecularViewport::setOrthographic(bool orthographic) {
 
 void MolecularViewport::setViewPreset(ViewPreset preset) {
     switch (preset) {
-    case ViewPreset::Front: yaw_ = 0.0F; pitch_ = 0.0F; break;
-    case ViewPreset::Back: yaw_ = 180.0F; pitch_ = 0.0F; break;
-    case ViewPreset::Left: yaw_ = -90.0F; pitch_ = 0.0F; break;
-    case ViewPreset::Right: yaw_ = 90.0F; pitch_ = 0.0F; break;
-    case ViewPreset::Top: yaw_ = 0.0F; pitch_ = -90.0F; break;
-    case ViewPreset::Bottom: yaw_ = 0.0F; pitch_ = 90.0F; break;
+    case ViewPreset::Front: orientation_ = orientationFor(0.F, 0.F); break;
+    case ViewPreset::Back: orientation_ = orientationFor(180.F, 0.F); break;
+    case ViewPreset::Left: orientation_ = orientationFor(-90.F, 0.F); break;
+    case ViewPreset::Right: orientation_ = orientationFor(90.F, 0.F); break;
+    case ViewPreset::Top: orientation_ = orientationFor(0.F, -90.F); break;
+    case ViewPreset::Bottom: orientation_ = orientationFor(0.F, 90.F); break;
     }
     emit cameraChanged();
     update();
@@ -593,17 +597,23 @@ void MolecularViewport::drawLabels(const QMatrix4x4& mvp) {
 }
 
 void MolecularViewport::mousePressEvent(QMouseEvent* event) {
-    lastMousePosition_ = event->position().toPoint();
+    lastMousePosition_ = event->position();
     pressPosition_ = lastMousePosition_;
+    dragging_ = false;
 }
 
 void MolecularViewport::mouseMoveEvent(QMouseEvent* event) {
-    const QPoint current = event->position().toPoint();
-    const QPoint delta = current - lastMousePosition_;
+    if (!event->buttons()) return;
+    const auto current = event->position();
+    if (!dragging_ && (current - pressPosition_).manhattanLength() < 3.0) return;
+    const auto delta = current - lastMousePosition_;
     lastMousePosition_ = current;
+    dragging_ = true;
     if (event->buttons() & Qt::LeftButton) {
-        yaw_ += delta.x() * 0.45F;
-        pitch_ = std::clamp(pitch_ + delta.y() * 0.45F, -89.0F, 89.0F);
+        const auto axis = QVector3D(delta.y(), delta.x(), 0.0F);
+        if (!axis.isNull()) {
+            orientation_ = (QQuaternion::fromAxisAndAngle(axis, axis.length() * 0.43F) * orientation_).normalized();
+        }
     } else if (event->buttons() & (Qt::MiddleButton | Qt::RightButton)) {
         const float scale = distance_ / std::max(200.0F, static_cast<float>(height())) * 1.2F;
         pan_ += QVector3D(delta.x() * scale, -delta.y() * scale, 0.0F);
@@ -613,16 +623,22 @@ void MolecularViewport::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void MolecularViewport::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton && (event->position().toPoint() - pressPosition_).manhattanLength() < 5) {
+    if (event->button() == Qt::LeftButton && !dragging_ && (event->position() - pressPosition_).manhattanLength() < 5.0) {
         pickAtom(event->position().toPoint());
     }
 }
 
 void MolecularViewport::wheelEvent(QWheelEvent* event) {
-    const float exponent = std::clamp(-event->angleDelta().y() / 1200.0F, -0.55F, 0.55F);
-    distance_ = std::clamp(distance_ * std::exp(exponent), 1.5F, 1500.0F);
-    emit cameraChanged();
-    update();
+    const auto pixels = event->pixelDelta().y();
+    const auto exponent = std::clamp(pixels != 0 ? -pixels / 360.0F : -event->angleDelta().y() / 1200.0F,
+                                     -0.55F, 0.55F);
+    if (exponent == 0.F) return;
+    zoomTarget_ = std::clamp(zoomTarget_ * std::exp(exponent), 1.5F, 1500.0F);
+    if (!zoomTimer_.isActive() && zoomTarget_ != distance_) {
+        zoomClock_.start();
+        zoomTimer_.start();
+    }
+    event->accept();
 }
 
 void MolecularViewport::pickAtom(const QPoint& point) {

@@ -31,18 +31,29 @@ int main(int argc, char* argv[]) {
     QCommandLineOption graphicsTest(QStringLiteral("graphics-test"), QStringLiteral("Check rendered transparency and protein colors, then exit."));
     QCommandLineOption trajectoryTest(QStringLiteral("trajectory-test"),
         QStringLiteral("Test frame access and playback using the supplied trajectory fixture."), QStringLiteral("path"));
+    QCommandLineOption linkedAnalysisTest(QStringLiteral("linked-analysis-test"),
+        QStringLiteral("Test linked trajectory analysis using the supplied fixture."), QStringLiteral("path"));
     parser.addOption(smokeTest);
     parser.addOption(integrationTest);
     parser.addOption(editorTest);
     parser.addOption(graphicsTest);
     parser.addOption(trajectoryTest);
+    parser.addOption(linkedAnalysisTest);
     parser.process(app);
 
     jlmol::MainWindow window;
     const auto arguments = parser.positionalArguments();
     if (!arguments.isEmpty()) window.openStructure(arguments.first());
     window.show();
-    if (parser.isSet(trajectoryTest)) {
+    if (parser.isSet(linkedAnalysisTest)) {
+        QTimer::singleShot(0, &app, [&app, &window, &parser, linkedAnalysisTest] {
+            QString report;
+            const bool attached = window.attachTrajectory(parser.value(linkedAnalysisTest));
+            const bool passed = attached && window.runLinkedAnalysisSelfTest(&report);
+            qInfo().noquote() << (attached ? report : QStringLiteral("Could not attach the analysis trajectory fixture"));
+            app.exit(passed ? 0 : 1);
+        });
+    } else if (parser.isSet(trajectoryTest)) {
         QTimer::singleShot(0, &app, [&app, &window, &parser, trajectoryTest] {
             QString report;
             const bool attached = window.attachTrajectory(parser.value(trajectoryTest));
