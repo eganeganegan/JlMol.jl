@@ -18,6 +18,7 @@ namespace jlmol {
 class JuliaConsole;
 class MolecularViewport;
 class ScriptEditor;
+class TrajectoryPanel;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -26,8 +27,10 @@ public:
     ~MainWindow() override;
 
     bool openStructure(const QString& path);
+    bool attachTrajectory(const QString& path);
     bool runIntegrationSelfTest(QString* report = nullptr);
     bool runGraphicsSelfTest(QString* report = nullptr);
+    bool runTrajectorySelfTest(QString* report = nullptr);
     bool runScriptEditorSelfTest(QString* report = nullptr);
 
 protected:
@@ -37,7 +40,9 @@ protected:
 
 private slots:
     void chooseStructure();
+    void chooseTrajectory();
     void refreshSceneUi();
+    void refreshFrameUi();
     void showError(const QString& message);
     void updateInspector();
 
@@ -60,6 +65,8 @@ private:
     QLabel* analysisMap_{};
     QScrollArea* analysisMapScroll_{};
     QDockWidget* analysisDock_{};
+    QDockWidget* trajectoryDock_{};
+    TrajectoryPanel* trajectoryPanel_{};
     QLabel* atomCountLabel_{};
     JuliaRuntime juliaRuntime_;
     JuliaConsole* juliaConsole_{};

@@ -8,7 +8,8 @@ export ActiveStructure, active_structure, structures, loadstructure, activate!, 
        name, atom_count, bond_count, isvisible, setvisible!, opacity, setopacity!, representation,
        setrepresentation!, color_scheme, colorby!, selected_atom, distance, angle,
        dihedral, radius_of_gyration, StructureSnapshot, snapshot, AlignmentResult,
-       alignstructures, rmsd, contactmap
+       alignstructures, rmsd, contactmap, attachtrajectory!, trajectory_info, setframe!,
+       trajectory_frame, trajectory_rmsd, minimum_image_displacement, periodic_distance
 
 "A stable handle to an application-owned molecular structure."
 struct ActiveStructure
@@ -178,5 +179,6 @@ function radius_of_gyration(structure::ActiveStructure = active_structure())
 end
 
 include("analysis.jl")
+include("trajectory.jl")
 
 end

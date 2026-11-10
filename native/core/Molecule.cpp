@@ -302,6 +302,13 @@ Molecule Molecule::loadPdb(const std::filesystem::path& path) {
     return molecule;
 }
 
+Molecule Molecule::withPositions(std::span<const Vec3> positions) const {
+    if (positions.size() != atoms_.size()) throw std::invalid_argument("Coordinate count does not match topology");
+    auto result = *this;
+    for (std::size_t i = 0; i < positions.size(); ++i) result.atoms_[i].position = positions[i];
+    return result;
+}
+
 Vec3 Molecule::center() const noexcept {
     Vec3 result{};
     if (atoms_.empty()) {

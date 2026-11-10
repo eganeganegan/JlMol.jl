@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 
 namespace jlmol {
 
@@ -45,6 +46,41 @@ bool MolecularScene::closeObject(ObjectId id) {
     }
     ++generation_;
     return true;
+}
+
+void MolecularScene::attachTrajectory(ObjectId id, const std::filesystem::path& path) {
+    const auto original = object(id);
+    if (!original || !original->molecule) throw std::runtime_error("Molecular object does not exist");
+    auto trajectory = std::make_shared<Trajectory>(path, original->molecule->atoms().size());
+    const auto frame = trajectory->readFrame(0);
+    auto molecule = std::make_shared<Molecule>(original->molecule->withPositions(frame->positions));
+    std::scoped_lock lock(mutex_);
+    const auto found = findObject(id);
+    if (found == objects_.end() || found->molecule != original->molecule) {
+        throw std::runtime_error("The structure changed while loading the trajectory");
+    }
+    found->molecule = std::move(molecule);
+    found->trajectory = std::move(trajectory);
+    found->frameIndex = 0;
+    found->frameMetadata = frame->metadata;
+    ++generation_;
+}
+
+void MolecularScene::setTrajectoryFrame(ObjectId id, std::size_t index) {
+    const auto original = object(id);
+    if (!original || !original->trajectory) throw std::runtime_error("No trajectory is attached to this structure");
+    if (index == original->frameIndex) return;
+    const auto frame = original->trajectory->readFrame(index);
+    auto molecule = std::make_shared<Molecule>(original->molecule->withPositions(frame->positions));
+    std::scoped_lock lock(mutex_);
+    const auto found = findObject(id);
+    if (found == objects_.end() || found->molecule != original->molecule) {
+        throw std::runtime_error("The structure changed while reading the trajectory frame");
+    }
+    found->molecule = std::move(molecule);
+    found->frameIndex = index;
+    found->frameMetadata = frame->metadata;
+    ++generation_;
 }
 
 std::vector<MolecularObject> MolecularScene::objects() const {

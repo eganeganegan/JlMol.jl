@@ -38,6 +38,8 @@ The structure argument may be omitted from `distance`, `angle`, and `dihedral` t
 
 `contactmap(mol; cutoff=8.0, atom_name="CA")` returns a symmetric contact matrix with ordered axis IDs. All of these analyses use nonperiodic coordinates. See [scientific methods](scientific_methods.md) for examples, numerical conventions, and size limits.
 
+Use `attachtrajectory!(mol, path)` with a matching topology, `setframe!(mol, frame)` to seek, and `trajectory_info(mol)` to inspect the current frame. `trajectory_frame(mol, frame)` and `trajectory_rmsd(mol)` read frames without moving the viewport. See [trajectories](trajectories.md) for periodic cell data and explicit minimum-image distances.
+
 The embedded session executes trusted local Julia code. It is not a security sandbox. Computation is synchronous in the current milestone; avoid long-running expressions during interactive work.
 
 ## Script editor

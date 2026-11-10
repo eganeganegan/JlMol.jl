@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,7 @@ class Molecule {
 public:
     static Molecule load(const std::filesystem::path& path);
     static Molecule loadPdb(const std::filesystem::path& path);
+    [[nodiscard]] Molecule withPositions(std::span<const Vec3> positions) const;
 
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
     [[nodiscard]] const std::filesystem::path& sourcePath() const noexcept { return sourcePath_; }

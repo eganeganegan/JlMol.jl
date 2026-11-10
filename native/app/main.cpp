@@ -29,17 +29,28 @@ int main(int argc, char* argv[]) {
     QCommandLineOption integrationTest(QStringLiteral("integration-test"), QStringLiteral("Run the native/Julia shared-scene integration test and exit."));
     QCommandLineOption editorTest(QStringLiteral("editor-test"), QStringLiteral("Run the Julia script editor integration test and exit."));
     QCommandLineOption graphicsTest(QStringLiteral("graphics-test"), QStringLiteral("Check rendered transparency and protein colors, then exit."));
+    QCommandLineOption trajectoryTest(QStringLiteral("trajectory-test"),
+        QStringLiteral("Test frame access and playback using the supplied trajectory fixture."), QStringLiteral("path"));
     parser.addOption(smokeTest);
     parser.addOption(integrationTest);
     parser.addOption(editorTest);
     parser.addOption(graphicsTest);
+    parser.addOption(trajectoryTest);
     parser.process(app);
 
     jlmol::MainWindow window;
     const auto arguments = parser.positionalArguments();
     if (!arguments.isEmpty()) window.openStructure(arguments.first());
     window.show();
-    if (parser.isSet(graphicsTest)) {
+    if (parser.isSet(trajectoryTest)) {
+        QTimer::singleShot(0, &app, [&app, &window, &parser, trajectoryTest] {
+            QString report;
+            const bool attached = window.attachTrajectory(parser.value(trajectoryTest));
+            const bool passed = attached && window.runTrajectorySelfTest(&report);
+            qInfo().noquote() << (attached ? report : QStringLiteral("Could not attach the trajectory fixture"));
+            app.exit(passed ? 0 : 1);
+        });
+    } else if (parser.isSet(graphicsTest)) {
         QTimer::singleShot(0, &app, [&app, &window] {
             QString report;
             const bool passed = window.runGraphicsSelfTest(&report);

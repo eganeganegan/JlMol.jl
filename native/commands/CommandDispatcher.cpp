@@ -26,6 +26,28 @@ bool CommandDispatcher::closeObject(ObjectId id) {
     return true;
 }
 
+bool CommandDispatcher::attachTrajectory(ObjectId id, const std::filesystem::path& path) {
+    try {
+        scene_->attachTrajectory(id, path);
+        emit sceneChanged();
+        return true;
+    } catch (const std::exception& error) {
+        emit commandFailed(QString::fromUtf8(error.what()));
+        return false;
+    }
+}
+
+bool CommandDispatcher::setTrajectoryFrame(ObjectId id, std::size_t index) {
+    try {
+        scene_->setTrajectoryFrame(id, index);
+        emit frameChanged();
+        return true;
+    } catch (const std::exception& error) {
+        emit commandFailed(QString::fromUtf8(error.what()));
+        return false;
+    }
+}
+
 bool CommandDispatcher::setActiveObject(ObjectId id) {
     if (!scene_->setActiveObject(id)) return false;
     emit sceneChanged();

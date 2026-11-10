@@ -1,6 +1,6 @@
 # Scientific methods
 
-All structure analyses use the loaded first frame. Coordinates and distances are in angstroms, angles are in degrees. These methods use nonperiodic coordinates: unwrap periodic molecules before analysis. Unit-cell or minimum-image correction is not inferred.
+Structure analyses use the displayed frame. Coordinates and distances are in angstroms, angles are in degrees. Ordinary analysis uses nonperiodic coordinates: unwrap periodic molecules before analysis. The [trajectory tools](trajectories.md) also provide per-frame RMSD and an explicit minimum-image distance for orthogonal cells.
 
 ## Rigid alignment and RMSD
 

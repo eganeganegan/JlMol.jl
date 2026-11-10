@@ -15,6 +15,7 @@ JlMol is a native molecular viewer built with C++20, Qt 6 Widgets, OpenGL, Chemf
 - Chain and residue selection, selected-atom and selected-residue labels, and Shift-click distance, angle, and dihedral measurement
 - Mass-weighted radius of gyration in the dockable analysis workspace and Julia API
 - Rigid structural alignment, RMSD with validated atom matching, and adjustable atom contact maps in the GUI and Julia
+- XTC, TRR, DCD, and multi-frame XYZ trajectory playback with a timeline and Julia frame access
 - Persistent embedded Julia console with captured output and stack traces
 - Dockable multi-tab Julia editor with line numbers, syntax highlighting, file operations, search/replace, and run selection/file
 - Julia commands for querying and changing the active native scene
@@ -57,4 +58,6 @@ Protein-focused representations also include `:c_alpha_trace`, `:backbone`, `:ca
 See the [architecture guide](docs/architecture.md) for scene ownership and thread boundaries.
 
 Use **Analysis > Align and Compare Structures** to compare two loaded objects, or **Analysis > Contact Map** for a C-alpha or all-atom map. Calculations use Julia's standard linear algebra and return owned results. See [scientific methods](docs/scientific_methods.md) for atom matching, nonperiodic coordinate assumptions, and Julia examples.
+
+To play a simulation, open its topology and use **File > Attach Trajectory**. See [trajectories](docs/trajectories.md) for playback controls, Julia examples, and periodic-boundary limits.
 

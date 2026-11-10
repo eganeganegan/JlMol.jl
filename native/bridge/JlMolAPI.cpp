@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -263,6 +264,81 @@ int jlmol_set_object_opacity(uint64_t objectId, double opacity) {
     }
     notifySceneChanged();
     return 0;
+}
+
+int jlmol_attach_trajectory(uint64_t objectId, const char* path) {
+    auto* scene = sceneOrError();
+    if (!scene) return 1;
+    if (!path || !*path) {
+        lastError = "A trajectory file path is required";
+        return 2;
+    }
+    try {
+        scene->attachTrajectory(objectId, path);
+        notifySceneChanged();
+        return 0;
+    } catch (const std::exception& error) {
+        lastError = error.what();
+        return 2;
+    }
+}
+
+int jlmol_set_trajectory_frame(uint64_t objectId, size_t index) {
+    auto* scene = sceneOrError();
+    if (!scene) return 1;
+    try {
+        scene->setTrajectoryFrame(objectId, index);
+        notifySceneChanged();
+        return 0;
+    } catch (const std::exception& error) {
+        lastError = error.what();
+        return 2;
+    }
+}
+
+int jlmol_trajectory_state(uint64_t objectId, size_t* count, size_t* index, double* timePs, double* cell) {
+    const auto* scene = sceneOrError();
+    if (!scene) return 1;
+    if (!count || !index || !timePs || !cell) {
+        lastError = "Trajectory state output buffers must not be null";
+        return 2;
+    }
+    const auto object = scene->object(objectId);
+    if (!object) {
+        lastError = "Molecular object does not exist";
+        return 2;
+    }
+    *count = object->trajectory ? object->trajectory->frameCount() : 0;
+    *index = object->frameIndex;
+    *timePs = object->frameMetadata.timePs.value_or(std::numeric_limits<double>::quiet_NaN());
+    std::copy(object->frameMetadata.cell.begin(), object->frameMetadata.cell.end(), cell);
+    return 0;
+}
+
+int jlmol_copy_trajectory_frame(uint64_t objectId, size_t index, double* coordinates, size_t capacity) {
+    const auto* scene = sceneOrError();
+    if (!scene) return 1;
+    const auto object = scene->object(objectId);
+    if (!object || !object->trajectory) {
+        lastError = "No trajectory is attached to this structure";
+        return 2;
+    }
+    if (!coordinates || capacity < object->molecule->atoms().size()) {
+        lastError = "Trajectory coordinate buffer is null or too small";
+        return 2;
+    }
+    try {
+        const auto frame = object->trajectory->readFrame(index);
+        for (const auto& atom : frame->positions) {
+            *coordinates++ = atom.x;
+            *coordinates++ = atom.y;
+            *coordinates++ = atom.z;
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        lastError = error.what();
+        return 2;
+    }
 }
 
 int jlmol_set_object_representation(uint64_t objectId, const char* representation) {

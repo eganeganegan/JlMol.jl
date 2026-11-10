@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define JLMOL_API_VERSION 5
+#define JLMOL_API_VERSION 6
 
 typedef void (*jlmol_scene_changed_callback)(void* user_data);
 
@@ -45,6 +45,15 @@ JLMOL_API int jlmol_set_object_visible(uint64_t object_id, int visible);
 /* Opacity is finite and in [0, 1]. Visibility remains a separate property. */
 JLMOL_API int jlmol_object_opacity(uint64_t object_id, double* result);
 JLMOL_API int jlmol_set_object_opacity(uint64_t object_id, double opacity);
+/* Frame indices are zero-based. Cell has nine doubles (three basis vectors). */
+JLMOL_API int jlmol_attach_trajectory(uint64_t object_id, const char* path);
+JLMOL_API int jlmol_set_trajectory_frame(uint64_t object_id, size_t index);
+/* A static structure returns count 0. Missing time is NaN; no cell is all zeros. */
+JLMOL_API int jlmol_trajectory_state(uint64_t object_id, size_t* count, size_t* index,
+                                    double* time_ps, double* cell);
+/* Copy xyz triples without changing the displayed frame. Capacity is in atoms. */
+JLMOL_API int jlmol_copy_trajectory_frame(uint64_t object_id, size_t index,
+                                         double* coordinates, size_t capacity);
 JLMOL_API int jlmol_set_object_representation(uint64_t object_id, const char* representation);
 JLMOL_API int jlmol_set_object_color_scheme(uint64_t object_id, const char* color_scheme);
 JLMOL_API const char* jlmol_object_representation(uint64_t object_id);

@@ -62,6 +62,7 @@ set(JLMOL_CORE_SOURCES
     native/core/MmcifMetadata.cpp
     native/core/Molecule.cpp
     native/core/MolecularScene.cpp
+    native/core/Trajectory.cpp
     native/bridge/JlMolAPI.cpp
 )
 
@@ -81,6 +82,7 @@ set(JLMOL_APP_SOURCES
     native/gui/MainWindow.cpp
     native/gui/MolecularViewport.cpp
     native/gui/ScriptEditor.cpp
+    native/gui/TrajectoryPanel.cpp
     native/scripting/JuliaRuntime.cpp
 )
 
@@ -142,5 +144,10 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/water.xyz"
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/mini.cif"
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/secondary.mmcif")
+    if(TARGET chemfiles)
+        add_executable(jlmol_trajectory_tests test/trajectory_tests.cpp)
+        target_link_libraries(jlmol_trajectory_tests PRIVATE jlmol_core chemfiles)
+        add_test(NAME native_trajectory COMMAND jlmol_trajectory_tests)
+    endif()
 endif()
 

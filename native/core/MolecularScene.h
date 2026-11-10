@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/Molecule.h"
+#include "core/Trajectory.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -23,6 +23,9 @@ struct MolecularObject {
     Representation representation{Representation::BallAndStick};
     ColorScheme colorScheme{ColorScheme::Element};
     double opacity{1.0};
+    std::shared_ptr<const Trajectory> trajectory;
+    std::size_t frameIndex{};
+    FrameMetadata frameMetadata;
 };
 
 class MolecularScene {
@@ -31,6 +34,8 @@ public:
     void setMolecule(std::shared_ptr<Molecule> molecule);
     [[nodiscard]] ObjectId addMolecule(std::shared_ptr<Molecule> molecule);
     [[nodiscard]] bool closeObject(ObjectId id);
+    void attachTrajectory(ObjectId id, const std::filesystem::path& path);
+    void setTrajectoryFrame(ObjectId id, std::size_t index);
     [[nodiscard]] std::vector<MolecularObject> objects() const;
     [[nodiscard]] std::optional<MolecularObject> object(ObjectId id) const;
     [[nodiscard]] std::size_t objectCount() const;

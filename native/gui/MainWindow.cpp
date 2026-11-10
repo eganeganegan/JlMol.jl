@@ -5,12 +5,14 @@
 #include "gui/JuliaConsole.h"
 #include "gui/MolecularViewport.h"
 #include "gui/ScriptEditor.h"
+#include "gui/TrajectoryPanel.h"
 
 #include <QActionGroup>
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QImage>
@@ -26,9 +28,13 @@
 #include <QSettings>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSlider>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QTemporaryDir>
+#include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -74,6 +80,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(dispatcher_, &CommandDispatcher::sceneChanged, viewport_, &MolecularViewport::sceneChanged);
     connect(dispatcher_, &CommandDispatcher::sceneChanged, this, &MainWindow::refreshSceneUi);
+    connect(dispatcher_, &CommandDispatcher::frameChanged, viewport_, &MolecularViewport::sceneChanged);
+    connect(dispatcher_, &CommandDispatcher::frameChanged, this, &MainWindow::refreshFrameUi);
     connect(dispatcher_, &CommandDispatcher::commandFailed, this, &MainWindow::showError);
     connect(viewport_, &MolecularViewport::atomPicked, this,
             [this](ObjectId objectId, std::uint64_t atomId, bool extend) { dispatcher_->selectAtom(objectId, atomId, extend); });
@@ -98,6 +106,10 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::createDocks() {
+    trajectoryPanel_ = new TrajectoryPanel(scene_, dispatcher_, this);
+    trajectoryDock_ = makeDock(this, QStringLiteral("Trajectory"), QStringLiteral("TrajectoryDock"),
+                               trajectoryPanel_, Qt::BottomDockWidgetArea);
+    trajectoryDock_->hide();
     objectTree_ = new QTreeWidget(this);
     objectTree_->setHeaderLabels({QStringLiteral("Molecular objects")});
     objectTree_->setAlternatingRowColors(true);
@@ -213,6 +225,7 @@ void MainWindow::chooseObjectOpacity(ObjectId id) {
 void MainWindow::createMenusAndToolbar() {
     auto* fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto* open = fileMenu->addAction(QStringLiteral("&Open Structure…"), QKeySequence::Open, this, &MainWindow::chooseStructure);
+    fileMenu->addAction(QStringLiteral("Attach &Trajectory…"), this, &MainWindow::chooseTrajectory);
     fileMenu->addAction(QStringLiteral("&Close Active Structure"), QKeySequence::Close, this, [this] {
         const auto active = scene_->activeObjectId();
         if (active) dispatcher_->closeObject(*active);
@@ -221,6 +234,7 @@ void MainWindow::createMenusAndToolbar() {
     fileMenu->addAction(QStringLiteral("&Quit"), QKeySequence::Quit, this, &QWidget::close);
 
     auto* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
+    viewMenu->addAction(trajectoryDock_->toggleViewAction());
     auto* projection = viewMenu->addMenu(QStringLiteral("Projection"));
     auto* perspective = projection->addAction(QStringLiteral("Perspective"));
     auto* orthographic = projection->addAction(QStringLiteral("Orthographic"));
@@ -359,6 +373,19 @@ bool MainWindow::openStructure(const QString& path) {
     recent.removeAll(path);
     recent.prepend(path);
     settings.setValue(QStringLiteral("recentFiles"), recent.mid(0, 10));
+    return true;
+}
+
+bool MainWindow::attachTrajectory(const QString& path) {
+    const auto active = scene_->activeObjectId();
+    if (!active) {
+        showError(QStringLiteral("Open the matching structure before attaching a trajectory."));
+        return false;
+    }
+    if (!dispatcher_->attachTrajectory(*active, path.toStdString())) return false;
+    trajectoryDock_->show();
+    trajectoryDock_->raise();
+    viewport_->fitToScene();
     return true;
 }
 
@@ -604,6 +631,58 @@ bool MainWindow::runGraphicsSelfTest(QString* report) {
     return passed;
 }
 
+bool MainWindow::runTrajectorySelfTest(QString* report) {
+    const auto active = scene_->activeObjectId();
+    const auto object = active ? scene_->object(*active) : std::nullopt;
+    if (!object || !object->trajectory || object->trajectory->frameCount() != 3) {
+        if (report) *report = QStringLiteral("Expected the three-frame XYZ fixture");
+        return false;
+    }
+    auto* slider = trajectoryPanel_->findChild<QSlider*>(QStringLiteral("TrajectorySlider"));
+    auto* frame = trajectoryPanel_->findChild<QSpinBox*>(QStringLiteral("TrajectoryFrame"));
+    auto* play = trajectoryPanel_->findChild<QToolButton*>(QStringLiteral("TrajectoryPlay"));
+    const auto atom = object->molecule->atoms().front().id;
+    dispatcher_->selectAtom(*active, atom);
+    const auto before = viewport_->grabFramebuffer();
+    slider->setValue(3);
+    const auto after = viewport_->grabFramebuffer();
+    const auto selected = scene_->selectedAtom();
+    const bool seek = frame->value() == 3 && selected && selected->id == atom && selected->position.x == 2.0F;
+    const bool rendered = !before.isNull() && before.size() == after.size() && before != after;
+
+    const auto script = juliaRuntime_.evaluate(QStringLiteral(
+        "using JlMol\n"
+        "mol = active_structure()\n"
+        "@assert trajectory_info(mol) == (frames=3, frame=3, time_ps=nothing, cell=nothing)\n"
+        "@assert trajectory_frame(mol, 1)[1,1] == 0\n"
+        "@assert trajectory_info(mol).frame == 3\n"
+        "@assert trajectory_rmsd(mol; align=false) ≈ [0, 1, 2]\n"
+        "@assert maximum(trajectory_rmsd(mol)) < 1e-6\n"
+        "setframe!(mol, 1)\n"
+        "println(\"trajectory Julia checks passed\")"));
+    const bool bridge = script.contains(QStringLiteral("trajectory Julia checks passed"));
+    refreshFrameUi();
+    const bool reset = slider->value() == 1 && frame->value() == 1;
+    play->click();
+    QEventLoop events;
+    QTimer poll;
+    connect(&poll, &QTimer::timeout, &events, [&] { if (!play->isChecked()) events.quit(); });
+    poll.start(10);
+    QTimer::singleShot(2000, &events, &QEventLoop::quit);
+    events.exec();
+    const bool playback = !play->isChecked() && frame->value() == 3 && scene_->object(*active)->frameIndex == 2;
+    if (play->isChecked()) play->click();
+    if (report) {
+        *report = QStringLiteral("Timeline seek and selection: %1\nFramebuffer update: %2\n"
+                                 "Julia frame access and RMSD: %3\nTimer playback to final frame: %4")
+                      .arg(seek ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           rendered ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           bridge && reset ? QStringLiteral("passed") : script,
+                           playback ? QStringLiteral("passed") : QStringLiteral("failed"));
+    }
+    return seek && rendered && bridge && reset && playback;
+}
+
 bool MainWindow::runScriptEditorSelfTest(QString* report) {
     if (!scriptEditor_ || !juliaRuntime_.isAvailable()) {
         if (report) *report = QStringLiteral("Script editor or Julia runtime is unavailable");
@@ -646,16 +725,24 @@ void MainWindow::chooseStructure() {
     if (!path.isEmpty()) openStructure(path);
 }
 
+void MainWindow::chooseTrajectory() {
+    if (!scene_->activeObjectId()) {
+        showError(QStringLiteral("Open the matching structure before attaching a trajectory."));
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Attach trajectory to active structure"), {},
+        QStringLiteral("Trajectories (*.xtc *.trr *.dcd *.xyz);;All files (*)"));
+    if (!path.isEmpty()) attachTrajectory(path);
+}
+
 void MainWindow::refreshSceneUi() {
     const QSignalBlocker blocker(objectTree_);
     objectTree_->clear();
     const auto objects = scene_->objects();
     const auto activeId = scene_->activeObjectId();
-    analysisMapScroll_->hide();
     if (objects.empty()) {
         atomCountLabel_->setText(QStringLiteral("No structure loaded"));
-        analysisSummary_->setText(QStringLiteral("Open a structure to calculate geometric properties."));
-        updateInspector();
+        refreshFrameUi();
         return;
     }
     std::size_t atomTotal = 0;
@@ -699,6 +786,12 @@ void MainWindow::refreshSceneUi() {
                                  .arg(bondTotal)
                                  .arg(QString::fromStdString(toString(scene_->representation())))
                                  .arg(QString::fromStdString(toString(scene_->colorScheme()))));
+    refreshFrameUi();
+}
+
+void MainWindow::refreshFrameUi() {
+    trajectoryPanel_->refresh();
+    analysisMapScroll_->hide();
     if (const auto molecule = scene_->molecule()) {
         analysisSummary_->setText(QStringLiteral("<h3>%1</h3><p>Radius of gyration: <b>%2 Å</b></p>"
                                                 "<p>Shift-click 2, 3, or 4 atoms for distance, angle, or dihedral.</p>")

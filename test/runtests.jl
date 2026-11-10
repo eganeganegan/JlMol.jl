@@ -13,6 +13,21 @@ using LinearAlgebra
     @test_throws ErrorException snapshot()
     @test_throws ErrorException opacity()
     @test_throws ErrorException setopacity!(0.5)
+    @test_throws ErrorException trajectory_info()
+    @test_throws ArgumentError setframe!(0)
+end
+
+@testset "Orthogonal periodic cells" begin
+    cell = Matrix(Diagonal([10.0, 8.0, 12.0]))
+    delta = [9.5, -7.5, 6.1]
+    expected = [-0.5, 0.5, -5.9]
+    @test minimum_image_displacement(delta, cell) ≈ expected
+    @test minimum_image_displacement(delta + cell * [3, -2, 2], cell) ≈ expected
+    rotation = [0.0 -1.0 0.0; 1.0 0.0 0.0; 0.0 0.0 1.0]
+    @test minimum_image_displacement(rotation * delta, rotation * cell) ≈ rotation * expected
+    @test_throws ArgumentError minimum_image_displacement(delta, zeros(3, 3))
+    @test_throws ArgumentError minimum_image_displacement(delta, [10.0 3.0 0.0; 0.0 8.0 0.0; 0.0 0.0 12.0])
+    @test_throws ArgumentError minimum_image_displacement([NaN, 0.0, 0.0], cell)
 end
 
 @testset "Rigid alignment and RMSD" begin

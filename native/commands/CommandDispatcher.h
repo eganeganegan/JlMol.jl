@@ -14,6 +14,8 @@ public:
     explicit CommandDispatcher(std::shared_ptr<MolecularScene> scene, QObject* parent = nullptr);
 
     bool loadStructure(const std::filesystem::path& path);
+    bool attachTrajectory(ObjectId id, const std::filesystem::path& path);
+    bool setTrajectoryFrame(ObjectId id, std::size_t index);
     bool closeObject(ObjectId id);
     bool setActiveObject(ObjectId id);
     bool setObjectVisible(ObjectId id, bool visible);
@@ -27,6 +29,7 @@ public:
 
 signals:
     void sceneChanged();
+    void frameChanged();
     void commandFailed(const QString& message);
 
 private:
