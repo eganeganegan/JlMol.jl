@@ -94,7 +94,8 @@ std::optional<double> dihedralDegrees(const Vec3& first, const Vec3& second,
 
     const auto unitMiddle = scale(middleBond, 1.0 / middleLength);
     const auto x = dot(firstNormal, secondNormal) / (firstNormalLength * secondNormalLength);
-    const auto y = dot(cross(firstNormal, unitMiddle), secondNormal) /
+    // The IUPAC sign is positive for clockwise rotation looking from the second atom toward the third.
+    const auto y = dot(cross(firstNormal, secondNormal), unitMiddle) /
                    (firstNormalLength * secondNormalLength);
     return std::atan2(y, x) * radiansToDegrees;
 }

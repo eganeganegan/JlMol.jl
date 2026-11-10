@@ -18,6 +18,9 @@ class TrajectoryPanel final : public QWidget {
 public:
     TrajectoryPanel(std::shared_ptr<MolecularScene> scene, CommandDispatcher* dispatcher, QWidget* parent);
     void refresh();
+    void pause();
+    [[nodiscard]] int playbackRate() const;
+    void restorePlaybackRate(int rate);
 
 private:
     void seek(int oneBasedFrame);

@@ -155,3 +155,48 @@ end
     @test_throws ArgumentError contactmap(data; atom_name="P")
 end
 
+@testset "Local plugin lifecycle" begin
+    mktempdir() do directory
+        file = joinpath(directory, "Custom analysis λ.jl")
+        write(file, """
+            module ExamplePlugin
+            using JlMol
+            const PLUGIN = PluginMetadata(:test_example, "Example", v"2.3.0")
+            function initialize_plugin!(registration)
+                register_command!(registration, :answer, "Answer", () -> 42)
+                register_command!(registration, :fail, "Fail", () -> error("test failure"))
+                register_analysis!(registration, :summary, "Summary", atom_count)
+                error("initialization failed after registration")
+            end
+            end
+            """)
+        @test_throws ErrorException loadplugin!(file)
+        @test isempty(plugins())
+        @test_throws ArgumentError run_plugin_command!(:test_example, :answer)
+
+        source = read(file, String)
+        write(file, replace(source, "error(\"initialization failed after registration\")" => "nothing"))
+        metadata = loadplugin!(file)
+        @test metadata.id == :test_example && metadata.version == v"2.3.0"
+        @test only(plugins()).enabled
+        @test run_plugin_command!(:test_example, :answer) == 42
+        @test_throws ErrorException run_plugin_command!(:test_example, :fail)
+        @test_throws ArgumentError run_plugin_command!(:test_example, :summary)
+        @test_throws ArgumentError loadplugin!(file)
+
+        duplicate = joinpath(directory, "duplicate.jl")
+        cp(file, duplicate)
+        @test_throws ArgumentError loadplugin!(duplicate)
+        @test !enableplugin!(:test_example, false)
+        @test_throws ArgumentError run_plugin_command!(:test_example, :answer)
+        @test enableplugin!(:test_example, true)
+        @test run_plugin_command!(:test_example, :answer) == 42
+
+        incompatible = joinpath(directory, "new_api.jl")
+        write(incompatible, replace(source, ":test_example" => ":test_incompatible",
+                                    "v\"2.3.0\")" => "v\"2.3.0\"; api_version=v\"99\")"))
+        @test_throws ArgumentError loadplugin!(incompatible)
+        @test length(plugins()) == 1
+    end
+end
+

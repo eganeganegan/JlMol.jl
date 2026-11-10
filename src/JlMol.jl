@@ -10,7 +10,9 @@ export ActiveStructure, active_structure, structures, loadstructure, activate!, 
        dihedral, radius_of_gyration, StructureSnapshot, snapshot, AlignmentResult,
        alignstructures, rmsd, contactmap, attachtrajectory!, trajectory_info, setframe!,
        trajectory_frame, trajectory_rmsd, trajectory_rmsf, trajectory_pca, cluster_conformations,
-       minimum_image_displacement, periodic_distance
+       minimum_image_displacement, periodic_distance, setatomcolors!,
+       PluginMetadata, PLUGIN_API_VERSION, loadplugin!, plugins, enableplugin!,
+       register_command!, register_analysis!, register_coloring!, run_plugin_command!
 
 "A stable handle to an application-owned molecular structure."
 struct ActiveStructure
@@ -120,6 +122,16 @@ end
 
 colorby!(value::Symbol) = colorby!(active_structure(), value)
 
+"Apply a `3 × N` RGB matrix with values in [0, 1], in topology atom order."
+function setatomcolors!(structure::ActiveStructure, colors::AbstractMatrix{<:Real})
+    size(colors) == (3, atom_count(structure)) || throw(ArgumentError("Expected a 3 × N RGB matrix in topology order"))
+    all(value -> 0 <= value <= 1, colors) || throw(ArgumentError("RGB components must be finite and in [0, 1]"))
+    rgb = Matrix{Cfloat}(colors)
+    _check(ccall(_symbol(:jlmol_set_object_atom_colors), Cint, (UInt64, Ptr{Cfloat}, Csize_t),
+                 structure.id, rgb, length(rgb)))
+    return structure
+end
+
 function selected_atom()
     ccall(_symbol(:jlmol_has_selection), Cint, ()) == 0 && return nothing
     return (
@@ -182,5 +194,6 @@ end
 include("analysis.jl")
 include("trajectory.jl")
 include("conformations.jl")
+include("plugins.jl")
 
 end

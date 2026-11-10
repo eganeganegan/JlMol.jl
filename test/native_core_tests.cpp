@@ -10,17 +10,31 @@
 #include <memory>
 
 int main(int argc, char** argv) {
-    assert(argc == 6);
+    assert(argc == 7);
     const jlmol::Vec3 origin{};
     const jlmol::Vec3 unitX{1.0F, 0.0F, 0.0F};
     const jlmol::Vec3 unitY{0.0F, 1.0F, 0.0F};
     const jlmol::Vec3 unitYZ{0.0F, 1.0F, 1.0F};
-    assert(std::abs(jlmol::analysis::distance(origin, unitX) - 1.0) < 1.0e-12);
-    assert(std::abs(*jlmol::analysis::angleDegrees(unitX, origin, unitY) - 90.0) < 1.0e-12);
-    assert(std::abs(*jlmol::analysis::dihedralDegrees(unitX, origin, unitY, unitYZ) - 90.0) < 1.0e-12);
+    constexpr double analyticTolerance = 1.0e-12;
+    assert(std::abs(jlmol::analysis::distance(origin, {3.0F, 4.0F, 12.0F}) - 13.0) < analyticTolerance);
+    assert(std::abs(jlmol::analysis::distance(unitX, unitX)) < analyticTolerance);
+    assert(std::abs(jlmol::analysis::angleDegrees(unitX, origin, unitX).value()) < analyticTolerance);
+    assert(std::abs(jlmol::analysis::angleDegrees(unitX, origin, unitY).value() - 90.0) < analyticTolerance);
+    assert(std::abs(jlmol::analysis::angleDegrees(unitX, origin, {-1.0F, 0.0F, 0.0F}).value() - 180.0) < analyticTolerance);
+    assert(!jlmol::analysis::angleDegrees(origin, origin, unitY));
+    assert(std::abs(jlmol::analysis::dihedralDegrees(unitX, origin, unitY, unitYZ).value() + 90.0) < analyticTolerance);
+    assert(std::abs(jlmol::analysis::dihedralDegrees(unitX, origin, unitY, {0.0F, 1.0F, -1.0F}).value() - 90.0) < analyticTolerance);
+    assert(!jlmol::analysis::dihedralDegrees(unitX, origin, origin, unitYZ));
+    assert(!jlmol::analysis::dihedralDegrees(unitX, origin, unitY, {0.0F, 2.0F, 0.0F}));
     const std::array positions{jlmol::Vec3{-1.0F, 0.0F, 0.0F}, jlmol::Vec3{1.0F, 0.0F, 0.0F}};
     assert(std::abs(jlmol::analysis::geometricRadiusOfGyration(positions) - 1.0) < 1.0e-12);
     const auto molecule = std::make_shared<jlmol::Molecule>(jlmol::Molecule::loadPdb(std::filesystem::path(argv[1])));
+    const auto alternate = jlmol::Molecule::loadPdb(argv[6]);
+    assert(alternate.atoms().size() == 2);
+    assert(alternate.atom(1) == &alternate.atoms().front());
+    assert(alternate.atom(2) == nullptr);
+    assert(alternate.atom(3) == &alternate.atoms().back());
+    assert(alternate.atom(0) == nullptr && alternate.atom(4) == nullptr);
     assert(molecule->atoms().size() == 10);
     assert(!molecule->bonds().empty());
     assert(molecule->atoms().front().element == "N");
@@ -33,6 +47,7 @@ int main(int argc, char** argv) {
     assert(jlmol::representationFromString("backbone") == jlmol::Representation::Backbone);
     assert(jlmol::representationFromString("cartoon") == jlmol::Representation::Cartoon);
     assert(jlmol::colorSchemeFromString("secondary-structure") == jlmol::ColorScheme::SecondaryStructure);
+    assert(jlmol::colorSchemeFromString("sequence") == jlmol::ColorScheme::Sequence);
 
     jlmol::MolecularScene scene;
     scene.setMolecule(molecule);
@@ -60,6 +75,19 @@ int main(int argc, char** argv) {
     assert(scene.representation() == jlmol::Representation::SpaceFilling);
     assert(jlmol_set_active_color_scheme("chain") == 0);
     assert(scene.colorScheme() == jlmol::ColorScheme::Chain);
+    std::vector<float> rgb(molecule->atoms().size() * 3, 0.25F);
+    rgb[1] = 0.75F;
+    assert(jlmol_set_object_atom_colors(firstObject, rgb.data(), rgb.size()) == 0);
+    assert(std::string(jlmol_object_color_scheme(firstObject)) == "custom");
+    const auto palette = scene.object(firstObject)->atomColors;
+    assert(palette && palette->at(0)[1] == 0.75F && palette->at(1)[1] == 0.25F);
+    rgb[1] = -1.0F;
+    assert(jlmol_set_object_atom_colors(firstObject, rgb.data(), rgb.size()) != 0);
+    assert(jlmol_set_object_atom_colors(firstObject, rgb.data(), rgb.size() - 3) != 0);
+    assert(jlmol_set_object_atom_colors(firstObject, nullptr, rgb.size()) != 0);
+    assert(scene.object(firstObject)->atomColors == palette);
+    assert(jlmol_set_active_color_scheme("chain") == 0);
+    assert(!scene.object(firstObject)->atomColors && scene.colorScheme() == jlmol::ColorScheme::Chain);
     scene.selectAtom(molecule->atoms().front().id);
     assert(jlmol_has_selection() == 1);
     assert(std::string(jlmol_selected_atom_name()) == "N");

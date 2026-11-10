@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <mutex>
 #include <vector>
 
@@ -8,6 +9,11 @@ namespace jlmol {
 
 struct NumericSeries {
     std::vector<double> values;
+    QString error;
+};
+
+struct PluginResponse {
+    QStringList fields;
     QString error;
 };
 
@@ -24,6 +30,7 @@ public:
     [[nodiscard]] QString version() const { return version_; }
     QString evaluate(const QString& source);
     NumericSeries evaluateSeries(const QString& source);
+    PluginResponse pluginRequest(const QString& operation, const QString& argument = {}, const QString& item = {});
     void shutdown();
 
 private:

@@ -1,27 +1,37 @@
 #include "gui/MainWindow.h"
+#include "app/ApplicationPaths.h"
 
 #include "bridge/JlMolAPI.h"
 #include "core/Analysis.h"
+#include "gui/ContactMapWidget.h"
+#include "gui/FigureExport.h"
 #include "gui/JuliaConsole.h"
 #include "gui/MolecularViewport.h"
 #include "gui/ScriptEditor.h"
 #include "gui/TrajectoryPanel.h"
 #include "gui/TrajectoryAnalysisPanel.h"
+#include "gui/WorkspaceFile.h"
 
 #include <QActionGroup>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QColorDialog>
 #include <QComboBox>
+#include <QDir>
 #include <QDockWidget>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QImage>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -30,11 +40,13 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QProgressDialog>
 #include <QSettings>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QTemporaryDir>
@@ -46,6 +58,8 @@
 #include <QWheelEvent>
 
 #include <cmath>
+#include <limits>
+#include <unordered_map>
 
 namespace jlmol {
 namespace {
@@ -67,6 +81,103 @@ QDockWidget* makeDock(QMainWindow* window, const QString& title, const QString& 
     dock->setAllowedAreas(Qt::AllDockWidgetAreas);
     window->addDockWidget(area, dock);
     return dock;
+}
+
+struct ExportRequest {
+    FigureOptions figure;
+    int first{};
+    int stride{1};
+    int count{1};
+    int fps{};
+};
+
+std::optional<ExportRequest> chooseExportOptions(QWidget* parent, QSize viewport, int frames = 0, int playbackRate = 12) {
+    QDialog dialog(parent);
+    dialog.setWindowTitle(frames ? QStringLiteral("Export Animation") : QStringLiteral("Export Figure"));
+    QFormLayout form(&dialog);
+    QComboBox format;
+    if (!frames) {
+        format.addItems({QStringLiteral("PNG"), QStringLiteral("SVG with editable labels")});
+        form.addRow(QStringLiteral("Format"), &format);
+    }
+    QSpinBox width, height;
+    width.setRange(1, 8192);
+    height.setRange(1, 8192);
+    QCheckBox locked(QStringLiteral("Match viewport proportions"));
+    locked.setChecked(true);
+    const auto aspect = double(std::max(1, viewport.width())) / std::max(1, viewport.height());
+    width.setValue(frames ? 1280 : 2400);
+    height.setValue(qRound(width.value() / aspect));
+    form.addRow(QStringLiteral("Width (px)"), &width);
+    form.addRow(QStringLiteral("Height (px)"), &height);
+    form.addRow(&locked);
+    QCheckBox transparent(QStringLiteral("Transparent background"));
+    QCheckBox labels(QStringLiteral("Include viewport labels"));
+    labels.setChecked(true);
+    form.addRow(&transparent);
+    form.addRow(&labels);
+    QSpinBox first, last, stride, fps;
+    if (frames) {
+        first.setRange(1, frames);
+        last.setRange(1, frames);
+        last.setValue(frames);
+        stride.setRange(1, frames);
+        stride.setValue((frames - 1) / 200 + 1);
+        fps.setRange(1, 60);
+        fps.setValue(playbackRate);
+        form.addRow(QStringLiteral("First frame"), &first);
+        form.addRow(QStringLiteral("Last frame"), &last);
+        form.addRow(QStringLiteral("Frame step"), &stride);
+        form.addRow(QStringLiteral("Frames per second"), &fps);
+    }
+    QLabel detail;
+    detail.setWordWrap(true);
+    form.addRow(&detail);
+    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    form.addRow(&buttons);
+    const auto refresh = [&] {
+        height.setEnabled(!locked.isChecked());
+        const int wantedHeight = locked.isChecked() ? qRound(width.value() / aspect) : height.value();
+        if (locked.isChecked()) {
+            const QSignalBlocker blocked(&height);
+            height.setValue(std::max(1, wantedHeight));
+        }
+        const QSize pixels(width.value(), height.value());
+        const int count = frames && first.value() <= last.value() ? (last.value() - first.value()) / stride.value() + 1 : 0;
+        bool valid = wantedHeight <= 8192 && MolecularViewport::supportsImageSize(pixels);
+        if (!valid) {
+            detail.setText(QStringLiteral("Use at most 8,192 pixels per side and 16,777,216 pixels total."));
+        } else if (frames && (count < 1 || count > 2000)) {
+            valid = false;
+            detail.setText(QStringLiteral("Choose a range and step that export 1 to 2,000 frames."));
+        } else if (frames) {
+            detail.setText(QStringLiteral("%1 frames · %2 s · Animated PNG").arg(count).arg(double(count) / fps.value(), 0, 'f', 2));
+        } else if (format.currentIndex() == 1) {
+            detail.setText(QStringLiteral("Molecular geometry is embedded as an image. Labels remain editable SVG text."));
+        } else {
+            detail.setText(QStringLiteral("PNG with 300 DPI print metadata."));
+        }
+        buttons.button(QDialogButtonBox::Ok)->setEnabled(valid);
+    };
+    for (auto* field : {&width, &height, &first, &last, &stride, &fps}) {
+        QObject::connect(field, &QSpinBox::valueChanged, &dialog, refresh);
+    }
+    QObject::connect(&locked, &QCheckBox::toggled, &dialog, refresh);
+    QObject::connect(&format, &QComboBox::currentIndexChanged, &dialog, refresh);
+    QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    refresh();
+    if (dialog.exec() != QDialog::Accepted) return {};
+    return ExportRequest{{{width.value(), height.value()}, transparent.isChecked(), labels.isChecked(), format.currentIndex() == 1},
+        frames ? first.value() - 1 : 0, frames ? stride.value() : 1,
+        frames ? (last.value() - first.value()) / stride.value() + 1 : 1, frames ? fps.value() : 0};
+}
+
+QString chooseExportPath(QWidget* parent, const QString& title, const QString& filter, const QString& suffix) {
+    QFileDialog dialog(parent, title, {}, filter);
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setDefaultSuffix(suffix);
+    return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles().value(0) : QString{};
 }
 
 } // namespace
@@ -183,7 +294,8 @@ void MainWindow::createDocks() {
             {QStringLiteral("By Element"), ColorScheme::Element},
             {QStringLiteral("By Chain"), ColorScheme::Chain},
             {QStringLiteral("By Residue"), ColorScheme::Residue},
-            {QStringLiteral("By Secondary Structure"), ColorScheme::SecondaryStructure}};
+            {QStringLiteral("By Secondary Structure"), ColorScheme::SecondaryStructure},
+            {QStringLiteral("By Residue Sequence"), ColorScheme::Sequence}};
         for (const auto& [label, scheme] : colors) {
             colorMenu->addAction(label, this, [this, objectId, scheme] {
                 dispatcher_->setActiveObject(objectId);
@@ -208,17 +320,29 @@ void MainWindow::createDocks() {
     analysisSummary_->setWordWrap(true);
     analysisSummary_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     analysisLayout->addWidget(analysisSummary_);
-    analysisMap_ = new QLabel(analysis);
-    analysisMap_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    analysisMap_ = new ContactMapWidget(analysis);
     analysisMapScroll_ = new QScrollArea(analysis);
     analysisMapScroll_->setWidget(analysisMap_);
-    analysisMapScroll_->setWidgetResizable(true);
+    analysisMapScroll_->setWidgetResizable(false);
     analysisLayout->addWidget(analysisMapScroll_);
     analysisMapScroll_->hide();
     analysisMapScroll_->setMinimumHeight(160);
+    connect(analysisMap_, &ContactMapWidget::pairActivated, this, [this](auto first, auto second) {
+        if (!contactMap_ || scene_->activeObjectId() != contactMap_->object) return;
+        const auto object = scene_->object(contactMap_->object);
+        if (!object || object->trajectory != contactMap_->trajectory) return;
+        dispatcher_->selectAtoms(contactMap_->object, first == second ? std::vector<std::uint64_t>{first}
+                                                                      : std::vector<std::uint64_t>{first, second});
+    });
     analysisLayout->addStretch();
     analysisDock_ = makeDock(this, QStringLiteral("Analysis Workspace"), QStringLiteral("AnalysisDock"), analysis, Qt::BottomDockWidgetArea);
     analysisDock_->hide();
+    connect(analysisDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (visible && defaultAnalysisPending_ && !contactMap_ && !alignmentReference_) {
+            refreshDefaultAnalysis();
+            updateInspector();
+        }
+    });
     trajectoryAnalysis_ = new TrajectoryAnalysisPanel(scene_, dispatcher_, &juliaRuntime_, this);
     trajectoryAnalysisDock_ = makeDock(this, QStringLiteral("Trajectory Analysis"), QStringLiteral("TrajectoryAnalysisDock"),
                                        trajectoryAnalysis_, Qt::BottomDockWidgetArea);
@@ -238,6 +362,10 @@ void MainWindow::createMenusAndToolbar() {
     auto* fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto* open = fileMenu->addAction(QStringLiteral("&Open Structure…"), QKeySequence::Open, this, &MainWindow::chooseStructure);
     fileMenu->addAction(QStringLiteral("Attach &Trajectory…"), this, &MainWindow::chooseTrajectory);
+    fileMenu->addAction(QStringLiteral("Open Workspace…"), this, &MainWindow::chooseWorkspaceToOpen);
+    fileMenu->addAction(QStringLiteral("Save Workspace…"), this, &MainWindow::chooseWorkspaceToSave);
+    fileMenu->addAction(QStringLiteral("Export Figure…"), this, &MainWindow::chooseFigureExport);
+    fileMenu->addAction(QStringLiteral("Export Animation…"), this, &MainWindow::chooseAnimationExport);
     fileMenu->addAction(QStringLiteral("&Close Active Structure"), QKeySequence::Close, this, [this] {
         const auto active = scene_->activeObjectId();
         if (active) dispatcher_->closeObject(*active);
@@ -252,9 +380,11 @@ void MainWindow::createMenusAndToolbar() {
     auto* orthographic = projection->addAction(QStringLiteral("Orthographic"));
     perspective->setCheckable(true);
     orthographic->setCheckable(true);
-    auto* projectionGroup = new QActionGroup(this);
-    projectionGroup->addAction(perspective);
-    projectionGroup->addAction(orthographic);
+    projectionActions_ = new QActionGroup(this);
+    perspective->setData(false);
+    orthographic->setData(true);
+    projectionActions_->addAction(perspective);
+    projectionActions_->addAction(orthographic);
     perspective->setChecked(true);
     connect(perspective, &QAction::triggered, this, [this] { viewport_->setOrthographic(false); });
     connect(orthographic, &QAction::triggered, this, [this] { viewport_->setOrthographic(true); });
@@ -268,7 +398,7 @@ void MainWindow::createMenusAndToolbar() {
         presets->addAction(label, this, [this, preset] { viewport_->setViewPreset(preset); });
     }
     auto* labels = viewMenu->addMenu(QStringLiteral("Labels"));
-    auto* labelGroup = new QActionGroup(this);
+    labelActions_ = new QActionGroup(this);
     const std::pair<QString, LabelMode> labelModes[] = {
         {QStringLiteral("None"), LabelMode::None},
         {QStringLiteral("Selected Atoms"), LabelMode::SelectedAtoms},
@@ -276,9 +406,29 @@ void MainWindow::createMenusAndToolbar() {
     for (const auto& [label, mode] : labelModes) {
         auto* action = labels->addAction(label);
         action->setCheckable(true);
-        labelGroup->addAction(action);
+        action->setData(static_cast<int>(mode));
+        labelActions_->addAction(action);
         if (mode == LabelMode::None) action->setChecked(true);
         connect(action, &QAction::triggered, this, [this, mode] { viewport_->setLabelMode(mode); });
+    }
+    auto* background = viewMenu->addMenu(QStringLiteral("Background"));
+    background->addAction(QStringLiteral("Dark"), this, [this] { viewport_->setBackground(QColor(9, 12, 17)); });
+    background->addAction(QStringLiteral("White"), this, [this] { viewport_->setBackground(Qt::white); });
+    background->addAction(QStringLiteral("Custom Color…"), this, [this] {
+        const auto color = QColorDialog::getColor(viewport_->cameraState().background, this, QStringLiteral("Background Color"));
+        if (color.isValid()) viewport_->setBackground(color);
+    });
+    auto* lighting = viewMenu->addMenu(QStringLiteral("Lighting"));
+    lightingActions_ = new QActionGroup(this);
+    const std::pair<QString, LightingPreset> lightingPresets[] = {
+        {QStringLiteral("Standard"), LightingPreset::Standard}, {QStringLiteral("Soft"), LightingPreset::Soft},
+        {QStringLiteral("Flat"), LightingPreset::Flat}};
+    for (const auto& [label, preset] : lightingPresets) {
+        auto* action = lighting->addAction(label, this, [this, preset] { viewport_->setLighting(preset); });
+        action->setCheckable(true);
+        action->setData(static_cast<int>(preset));
+        lightingActions_->addAction(action);
+        if (preset == LightingPreset::Standard) action->setChecked(true);
     }
 
     auto* representationMenu = menuBar()->addMenu(QStringLiteral("&Representation"));
@@ -305,6 +455,7 @@ void MainWindow::createMenusAndToolbar() {
     colorMenu->addAction(QStringLiteral("By Residue"), this, [this] { dispatcher_->setColorScheme(ColorScheme::Residue); });
     colorMenu->addAction(QStringLiteral("By Secondary Structure"), this,
                          [this] { dispatcher_->setColorScheme(ColorScheme::SecondaryStructure); });
+    colorMenu->addAction(QStringLiteral("By Residue Sequence"), this, [this] { dispatcher_->setColorScheme(ColorScheme::Sequence); });
 
     auto* analysisMenu = menuBar()->addMenu(QStringLiteral("&Analysis"));
     analysisMenu->addAction(analysisDock_->toggleViewAction());
@@ -320,7 +471,8 @@ void MainWindow::createMenusAndToolbar() {
         analysisSummary_->setText(QStringLiteral("<h3>Radius of gyration</h3><p>%1 Å</p><p>%2 atoms : mass-weighted about the center of mass</p>")
                                       .arg(analysis::radiusOfGyration(*molecule), 0, 'f', 3)
                                       .arg(molecule->atoms().size()));
-        analysisMapScroll_->hide();
+        clearContactMap();
+        alignmentReference_.reset();
     });
     analysisMenu->addAction(QStringLiteral("Align and Compare Structures…"), this, [this] {
         const auto active = scene_->activeObjectId();
@@ -371,10 +523,114 @@ void MainWindow::createMenusAndToolbar() {
     scriptMenu->addAction(QStringLiteral("Run File"), QKeySequence(QStringLiteral("Ctrl+Shift+Return")),
                           scriptEditor_, &ScriptEditor::runScript);
 
+    createPluginMenus(analysisMenu, colorMenu);
+
     auto* toolbar = addToolBar(QStringLiteral("Main"));
     toolbar->setObjectName(QStringLiteral("MainToolbar"));
     toolbar->addAction(open);
     toolbar->addAction(QStringLiteral("Fit"), viewport_, &MolecularViewport::fitToScene);
+}
+
+void MainWindow::createPluginMenus(QMenu* analysisMenu, QMenu* colorMenu) {
+    auto* plugins = menuBar()->addMenu(QStringLiteral("&Plugins"));
+    plugins->setEnabled(juliaRuntime_.isAvailable());
+    plugins->addAction(QStringLiteral("Load Local Plugin…"), this, [this] {
+        const auto folder = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/plugins");
+        const auto start = QDir().mkpath(folder) ? folder : QDir::homePath();
+        const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("Load a trusted local Julia plugin"), start,
+                                                       QStringLiteral("Julia plugins (*.jl)"));
+        if (path.isEmpty()) return;
+        QString error;
+        if (!loadPlugin(path, &error)) showError(error);
+    });
+    auto* management = plugins->addMenu(QStringLiteral("Enabled Plugins"));
+    management->setObjectName(QStringLiteral("PluginManagementMenu"));
+    management->setToolTipsVisible(true);
+    management->addAction(QStringLiteral("No plugins loaded"))->setEnabled(false);
+    connect(management, &QMenu::aboutToShow, this, [this, management] { refreshPluginManagement(management); });
+
+    const auto addItems = [this](QMenu* parent, const QString& title, const QString& kind) {
+        auto* menu = parent->addMenu(title);
+        menu->setObjectName(QStringLiteral("PluginItems-%1").arg(kind));
+        menu->setEnabled(juliaRuntime_.isAvailable());
+        menu->setToolTipsVisible(true);
+        menu->addAction(QStringLiteral("No enabled plugin items"))->setEnabled(false);
+        connect(menu, &QMenu::aboutToShow, this, [this, menu, kind] { refreshPluginItems(menu, kind); });
+    };
+    addItems(plugins, QStringLiteral("Commands"), QStringLiteral("command"));
+    addItems(analysisMenu, QStringLiteral("Plugins"), QStringLiteral("analysis"));
+    addItems(colorMenu, QStringLiteral("Plugins"), QStringLiteral("color"));
+}
+
+bool MainWindow::loadPlugin(const QString& path, QString* error) {
+    const auto result = juliaRuntime_.pluginRequest(QStringLiteral("load"), path);
+    if (!result.error.isEmpty() || result.fields.size() != 2) {
+        *error = result.error.isEmpty() ? QStringLiteral("Julia returned invalid plugin metadata.") : result.error;
+        return false;
+    }
+    statusBar()->showMessage(QStringLiteral("Loaded %1 %2").arg(result.fields[0], result.fields[1]), 6000);
+    return true;
+}
+
+void MainWindow::refreshPluginManagement(QMenu* menu) {
+    menu->clear();
+    const auto result = juliaRuntime_.pluginRequest(QStringLiteral("plugins"));
+    if (result.fields.isEmpty()) {
+        auto* empty = menu->addAction(result.error.isEmpty() ? QStringLiteral("No plugins loaded") : result.error);
+        empty->setEnabled(false);
+        return;
+    }
+    for (qsizetype i = 0; i + 4 < result.fields.size(); i += 5) {
+        const auto id = result.fields[i];
+        auto* action = menu->addAction(QStringLiteral("%1 (%2)").arg(result.fields[i + 1], result.fields[i + 2])
+                                          .replace(QLatin1String("&"), QLatin1String("&&")));
+        action->setObjectName(id);
+        action->setToolTip(result.fields[i + 3]);
+        action->setCheckable(true);
+        action->setChecked(result.fields[i + 4] == QStringLiteral("1"));
+        connect(action, &QAction::triggered, this, [this, action, id](bool enabled) {
+            const auto updated = juliaRuntime_.pluginRequest(QStringLiteral("enable"), id,
+                                                            enabled ? QStringLiteral("1") : QStringLiteral("0"));
+            if (updated.error.isEmpty()) return;
+            action->setChecked(!enabled);
+            showError(updated.error);
+        });
+    }
+}
+
+void MainWindow::refreshPluginItems(QMenu* menu, const QString& kind) {
+    menu->clear();
+    const auto result = juliaRuntime_.pluginRequest(QStringLiteral("items"), kind);
+    if (result.fields.isEmpty()) {
+        auto* empty = menu->addAction(result.error.isEmpty() ? QStringLiteral("No enabled plugin items") : result.error);
+        empty->setEnabled(false);
+        return;
+    }
+    for (qsizetype i = 0; i + 3 < result.fields.size(); i += 4) {
+        const auto id = result.fields[i];
+        const auto item = result.fields[i + 1];
+        const auto label = result.fields[i + 2];
+        auto* action = menu->addAction(QString(label).replace(QLatin1String("&"), QLatin1String("&&")));
+        action->setObjectName(id + QLatin1Char('/') + item);
+        action->setToolTip(result.fields[i + 3]);
+        action->setEnabled(kind == QStringLiteral("command") || scene_->activeObjectId().has_value());
+        connect(action, &QAction::triggered, this, [this, id, item, label, kind] {
+            const auto output = juliaRuntime_.pluginRequest(QStringLiteral("run"), id, item);
+            if (!output.error.isEmpty()) {
+                showError(output.error);
+            } else if (kind == QStringLiteral("analysis")) {
+                clearContactMap();
+                alignmentReference_.reset();
+                analysisDock_->show();
+                analysisDock_->raise();
+                analysisSummary_->setText(QStringLiteral("<h3>%1</h3><pre>%2</pre>")
+                                              .arg(label.toHtmlEscaped(), output.fields.value(0).toHtmlEscaped()));
+            } else {
+                const auto message = kind == QStringLiteral("command") ? output.fields.value(0) : QString{};
+                statusBar()->showMessage(message.isEmpty() ? label : message, 6000);
+            }
+        });
+    }
 }
 
 bool MainWindow::openStructure(const QString& path) {
@@ -402,7 +658,7 @@ bool MainWindow::attachTrajectory(const QString& path) {
     return true;
 }
 
-bool MainWindow::showAlignment(ObjectId referenceId) {
+bool MainWindow::showAlignment(ObjectId referenceId, bool reveal) {
     const auto active = scene_->activeObjectId();
     if (!active) return false;
     const auto output = juliaRuntime_.evaluate(QStringLiteral(
@@ -414,34 +670,46 @@ bool MainWindow::showAlignment(ObjectId referenceId) {
         "println(\"RMSD after alignment: \", round(fit.rmsd; digits=6), \" Å\")\n"
         "println(\"Proper rigid rotation and translation fitted; loaded coordinates are unchanged.\")\n"
         "end").arg(*active).arg(referenceId));
-    analysisDock_->show();
-    analysisDock_->raise();
-    analysisMapScroll_->hide();
+    if (reveal) {
+        analysisDock_->show();
+        analysisDock_->raise();
+    }
+    clearContactMap();
     analysisSummary_->setText(QStringLiteral("<h3>Structural alignment</h3><pre>%1</pre>").arg(output.toHtmlEscaped()));
-    return output.contains(QStringLiteral("RMSD after alignment:"));
+    const bool calculated = output.contains(QStringLiteral("RMSD after alignment:"));
+    alignmentReference_ = calculated ? std::optional<ObjectId>{referenceId} : std::nullopt;
+    return calculated;
 }
 
-bool MainWindow::showContactMap(double cutoff, bool cAlphaOnly) {
+bool MainWindow::showContactMap(double cutoff, bool cAlphaOnly, std::optional<std::size_t> mapFrame, bool reveal) {
     const auto active = scene_->activeObjectId();
-    if (!active) return false;
+    const auto object = active ? scene_->object(*active) : std::nullopt;
+    if (!object) return false;
+    const auto frame = mapFrame.value_or(object->frameIndex);
+    const auto coordinates = frame == object->frameIndex ? QStringLiteral("data.coordinates") :
+        QStringLiteral("JlMol.trajectory_frame(JlMol.ActiveStructure(UInt64(%1)), %2)").arg(*active).arg(frame + 1);
     // A returned Julia string avoids filling the redirected stdout pipe with matrix data.
     const auto output = juliaRuntime_.evaluate(QStringLiteral(
         "using JlMol\nlet data = JlMol.snapshot(JlMol.ActiveStructure(UInt64(%1)))\n"
         "indices = %2\n"
         "isempty(indices) && error(\"No atoms match this contact-map selection\")\n"
         "length(indices) <= 1024 || error(\"GUI contact maps support up to 1024 atoms; choose C-alpha atoms or use the Julia API\")\n"
-        "map = JlMol.contactmap(data.coordinates[:, indices]; cutoff=%3)\n"
+        "points = %4\n"
+        "map = JlMol.contactmap(points[:, indices]; cutoff=%3)\n"
         "join([join(data.atom_ids[indices], \",\"); [join(ifelse.(map[i, :], \"1\", \"0\")) for i in axes(map, 1)]], \"\\n\")\n"
         "end").arg(*active)
         .arg(cAlphaOnly ? QStringLiteral("findall(==(\"CA\"), data.atom_names)")
                        : QStringLiteral("collect(eachindex(data.atom_ids))"))
-        .arg(cutoff, 0, 'g', 15));
+        .arg(cutoff, 0, 'g', 17).arg(coordinates));
     const auto decoded = QJsonDocument::fromJson((QStringLiteral("[") + output + QStringLiteral("]")).toUtf8());
     const auto rows = decoded.isArray() && decoded.array().size() == 1 && decoded.array()[0].isString()
                           ? decoded.array()[0].toString().split('\n') : QStringList{};
-    analysisDock_->show();
-    analysisDock_->raise();
-    analysisMapScroll_->hide();
+    if (reveal) {
+        analysisDock_->show();
+        analysisDock_->raise();
+    }
+    clearContactMap();
+    alignmentReference_.reset();
     if (rows.size() < 2) {
         analysisSummary_->setText(QStringLiteral("<h3>Contact map</h3><pre>%1</pre>").arg(output.toHtmlEscaped()));
         return false;
@@ -449,21 +717,55 @@ bool MainWindow::showContactMap(double cutoff, bool cAlphaOnly) {
     const auto ids = rows.front().split(',');
     const int count = ids.size();
     if (count > 1024 || rows.size() != count + 1) return false;
+    std::vector<std::uint64_t> atomIds;
+    atomIds.reserve(count);
+    for (const auto& value : ids) {
+        bool ok = false;
+        const auto id = value.toULongLong(&ok);
+        if (!ok || !id) return false;
+        atomIds.push_back(id);
+    }
     QImage image(count, count, QImage::Format_RGB32);
     int contacts = 0;
     for (int row = 0; row < count; ++row) {
         if (rows[row + 1].size() != count) return false;
         for (int column = 0; column < count; ++column) {
-            const bool contact = rows[row + 1][column] == QLatin1Char('1');
+            const auto value = rows[row + 1][column];
+            if (value != QLatin1Char('0') && value != QLatin1Char('1')) return false;
+            const bool contact = value == QLatin1Char('1');
             image.setPixelColor(column, row, contact ? QColor(44, 162, 170) : QColor(245, 247, 250));
             if (row < column && contact) ++contacts;
         }
     }
-    analysisSummary_->setText(QStringLiteral("<h3>Contact map</h3><p>%1 atoms : %2 unique contacts : cutoff %3 Å</p>"
-        "<p>Rows and columns follow atom order. Teal: contact; pale: no contact. Diagonal excluded; nonperiodic distances.</p>")
-                                 .arg(count).arg(contacts).arg(cutoff));
-    analysisMap_->setPixmap(QPixmap::fromImage(image.scaled(512, 512, Qt::KeepAspectRatio, Qt::FastTransformation)));
-    analysisMap_->setToolTip(QStringLiteral("Ordered atom IDs on both axes: %1").arg(ids.join(QStringLiteral(", "))));
+    contactMap_ = ContactMapContext{*active, object->trajectory, frame, count, contacts, cutoff, cAlphaOnly};
+    analysisMap_->setMatrix(std::move(image), std::move(atomIds));
+    return refreshContactMap();
+}
+
+void MainWindow::clearContactMap() {
+    contactMap_.reset();
+    analysisMapScroll_->hide();
+    analysisMap_->clear();
+}
+
+bool MainWindow::refreshContactMap() {
+    if (!contactMap_) return false;
+    const auto& map = *contactMap_;
+    const auto object = scene_->object(map.object);
+    if (!object || scene_->activeObjectId() != map.object || object->trajectory != map.trajectory) {
+        clearContactMap();
+        return false;
+    }
+    auto summary = QStringLiteral("<h3>Contact map</h3><p>%1 atoms : %2 unique contacts : cutoff %3 Å</p>")
+        .arg(map.atomCount).arg(map.contacts).arg(map.cutoff);
+    if (map.trajectory) {
+        summary += QStringLiteral("<p>Map frame %1 : viewer frame %2. Reopen Contact Map to recalculate.</p>")
+            .arg(map.frame + 1).arg(object->frameIndex + 1);
+    }
+    summary += QStringLiteral("<p>Teal: contact. Amber: selected atoms. Click a cell to select its atom pair.</p>");
+    analysisSummary_->setText(summary);
+    const auto selected = scene_->selectedObjectId() == map.object ? scene_->selectedAtomIds() : std::vector<std::uint64_t>{};
+    analysisMap_->setSelectedAtoms(selected);
     analysisMapScroll_->show();
     return true;
 }
@@ -693,13 +995,24 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     auto* frame = trajectoryPanel_->findChild<QSpinBox*>(QStringLiteral("TrajectoryFrame"));
     auto* play = trajectoryPanel_->findChild<QToolButton*>(QStringLiteral("TrajectoryPlay"));
     const auto atom = object->molecule->atoms().front().id;
+    const auto unselected = viewport_->grabFramebuffer();
+    auto* root = objectTree_->topLevelItem(0);
+    root->setExpanded(false);
     dispatcher_->selectAtom(*active, atom);
+    const auto selectionUpdate = viewport_->measureRedraw();
     const auto before = viewport_->grabFramebuffer();
+    const bool partialSelection = !unselected.isNull() && unselected != before &&
+        selectionUpdate.uploadBytes == sizeof(RenderVertex) && objectTree_->topLevelItem(0) == root && !root->isExpanded();
     slider->setValue(3);
     const auto after = viewport_->grabFramebuffer();
     const auto selected = scene_->selectedAtom();
     const bool seek = frame->value() == 3 && selected && selected->id == atom && selected->position.x == 2.0F;
     const bool rendered = !before.isNull() && before.size() == after.size() && before != after;
+    const auto alternate = object->colorScheme == ColorScheme::Element ? ColorScheme::Chain : ColorScheme::Element;
+    (void)scene_->setColorScheme(*active, alternate);
+    (void)viewport_->grabFramebuffer();
+    (void)scene_->setColorScheme(*active, object->colorScheme);
+    const bool matchesRebuild = viewport_->grabFramebuffer() == after;
 
     const auto script = juliaRuntime_.evaluate(QStringLiteral(
         "using JlMol\n"
@@ -725,14 +1038,16 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     const bool playback = !play->isChecked() && frame->value() == 3 && scene_->object(*active)->frameIndex == 2;
     if (play->isChecked()) play->click();
     if (report) {
-        *report = QStringLiteral("Timeline seek and selection: %1\nFramebuffer update: %2\n"
-                                 "Julia frame access and RMSD: %3\nTimer playback to final frame: %4")
+        *report = QStringLiteral("Timeline seek and selection: %1\nFramebuffer update and rebuild match: %2\n"
+                                 "Julia frame access and RMSD: %3\nTimer playback to final frame: %4\n"
+                                 "Partial selection upload and stable explorer: %5")
                       .arg(seek ? QStringLiteral("passed") : QStringLiteral("failed"),
-                           rendered ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           rendered && matchesRebuild ? QStringLiteral("passed") : QStringLiteral("failed"),
                            bridge && reset ? QStringLiteral("passed") : script,
-                           playback ? QStringLiteral("passed") : QStringLiteral("failed"));
+                           playback ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           partialSelection ? QStringLiteral("passed") : QStringLiteral("failed"));
     }
-    return seek && rendered && bridge && reset && playback;
+    return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection;
 }
 
 bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
@@ -829,9 +1144,27 @@ bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
     const bool sampledPca = timeline->value() == 3 && plot->markers() == std::vector<std::size_t>{2};
     const bool pcaLink = projected && scatterSought && scatterFollowed && unsampledPca && sampledPca;
 
+    bool contactLink = false;
+    if (showContactMap(1.5, false)) {
+        const auto beforeMapSelection = analysisMap_->grab().toImage();
+        const auto pair = analysisMap_->cellCenter(0, 1);
+        QMouseEvent event(QEvent::MouseButtonPress, pair, analysisMap_->mapToGlobal(pair.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(analysisMap_, &event);
+        const auto pairMap = analysisMap_->grab().toImage();
+        const bool pairSelected = scene_->selectedAtomIds() == std::vector<std::uint64_t>{oxygen, hydrogen} &&
+            !pairMap.isNull() && beforeMapSelection.size() == pairMap.size() && pairMap != beforeMapSelection;
+        dispatcher_->selectAtom(*active, object->molecule->atoms()[2].id);
+        const bool mapFollowedSelection = analysisMap_->grab().toImage() != pairMap;
+        timeline->setValue(1);
+        const bool framePinned = !analysisMapScroll_->isHidden() &&
+            analysisSummary_->text().contains(QStringLiteral("Map frame 3 : viewer frame 1"));
+        contactLink = pairSelected && mapFollowedSelection && framePinned;
+    }
+
     const auto staticId = scene_->addMolecule(std::make_shared<Molecule>(*object->molecule));
     dispatcher_->setActiveObject(staticId);
-    const bool invalidated = plot->values().empty() && !calculate->isEnabled();
+    const bool invalidated = plot->values().empty() && !calculate->isEnabled() && analysisMapScroll_->isHidden();
     dispatcher_->closeObject(staticId);
 
     const bool frameLink = sampled && sought && followed;
@@ -842,11 +1175,303 @@ bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
         *report = QStringLiteral("Sampled RMSD and bidirectional frame link: %1\n"
                                  "Selected-atom recalculation: %2\nRMSF and atom link: %3\n"
                                  "PCA scatter, clusters, and bidirectional frame link: %4\n"
-                                 "Object-switch invalidation: %5")
+                                 "Linked contact map and frame label: %5\nObject-switch invalidation: %6")
                       .arg(verdict(frameLink), verdict(selectionLink), verdict(atomLink),
-                           verdict(pcaLink), verdict(invalidated));
+                           verdict(pcaLink), verdict(contactLink), verdict(invalidated));
     }
-    return frameLink && selectionLink && atomLink && pcaLink && invalidated;
+    return frameLink && selectionLink && atomLink && pcaLink && contactLink && invalidated;
+}
+
+bool MainWindow::runPluginSelfTest(const QString& path, QString* report) {
+    const auto object = scene_->activeObjectId();
+    if (!object) {
+        if (report) *report = QStringLiteral("Open a structure for the plugin test.");
+        return false;
+    }
+    QString error;
+    if (!loadPlugin(path, &error)) {
+        if (report) *report = error;
+        return false;
+    }
+    const bool duplicateRejected = !loadPlugin(path, &error) && error.contains(QStringLiteral("already loaded"));
+    const auto menuAction = [this](const QString& menuName, const QString& item) -> QAction* {
+        auto* menu = findChild<QMenu*>(menuName);
+        if (!menu) return nullptr;
+        menu->popup(mapToGlobal(QPoint(40, 40)));
+        QCoreApplication::processEvents();
+        menu->hide();
+        return menu->findChild<QAction*>(item, Qt::FindDirectChildrenOnly);
+    };
+    const auto commandMenu = QStringLiteral("PluginItems-command");
+    const auto commandId = QStringLiteral("structure_tools/space_filling");
+    const auto management = QStringLiteral("PluginManagementMenu");
+    const auto pluginId = QStringLiteral("structure_tools");
+    auto* command = menuAction(commandMenu, commandId);
+    if (command) command->trigger();
+    QCoreApplication::processEvents();
+    const bool commandRan = command && scene_->representation(*object) == Representation::SpaceFilling &&
+        statusBar()->currentMessage().contains(QStringLiteral("Showing space-filling atoms"));
+
+    auto* analysis = menuAction(QStringLiteral("PluginItems-analysis"), QStringLiteral("structure_tools/summary"));
+    if (analysis) analysis->trigger();
+    const bool analysisRan = analysis && analysisDock_->isVisible() &&
+        analysisSummary_->text().contains(QStringLiteral("Structure Summary")) &&
+        analysisSummary_->text().contains(QStringLiteral("Radius of gyration"));
+
+    const auto before = viewport_->grabFramebuffer();
+    auto* color = menuAction(QStringLiteral("PluginItems-color"), QStringLiteral("structure_tools/radial"));
+    if (color) color->trigger();
+    QCoreApplication::processEvents();
+    const auto after = viewport_->grabFramebuffer();
+    const auto styled = scene_->object(*object);
+    const bool coloringRan = color && styled && styled->atomColors && scene_->colorScheme(*object) == ColorScheme::Custom &&
+        !before.isNull() && before.size() == after.size() && before != after;
+
+    auto* toggle = menuAction(management, pluginId);
+    const bool enabledAtLoad = toggle && toggle->isChecked();
+    if (toggle) toggle->trigger();
+    const bool hiddenWhenDisabled = menuAction(commandMenu, commandId) == nullptr &&
+        menuAction(QStringLiteral("PluginItems-color"), QStringLiteral("structure_tools/radial")) == nullptr;
+    toggle = menuAction(management, pluginId);
+    const bool stayedDisabled = toggle && !toggle->isChecked();
+    if (toggle) toggle->trigger();
+    const bool enableWorked = enabledAtLoad && hiddenWhenDisabled && stayedDisabled && menuAction(commandMenu, commandId);
+    if (report) {
+        const auto verdict = [](bool ok) { return ok ? QStringLiteral("passed") : QStringLiteral("failed"); };
+        *report = QStringLiteral("Local loading and duplicate rejection: %1\nGUI plugin command: %2\n"
+                                 "Analysis workspace result: %3\nRendered custom coloring: %4\nEnable/disable menus: %5")
+                      .arg(verdict(duplicateRejected), verdict(commandRan), verdict(analysisRan), verdict(coloringRan), verdict(enableWorked));
+    }
+    return duplicateRejected && commandRan && analysisRan && coloringRan && enableWorked;
+}
+
+bool MainWindow::runExportSelfTest(const QString& trajectory, QString* report) {
+    const auto fail = [report](const QString& message) {
+        if (report) *report = message;
+        return false;
+    };
+    const auto water = scene_->activeObjectId();
+    if (!water || scene_->molecule()->atoms().size() != 3 || !attachTrajectory(trajectory)) {
+        return fail(QStringLiteral("Open the water topology and analysis trajectory fixtures."));
+    }
+    QTemporaryDir temporary;
+    const auto requestedDirectory = qEnvironmentVariable("JLMOL_EXPORT_TEST_DIR");
+    const QDir output(requestedDirectory.isEmpty() ? temporary.path() : requestedDirectory);
+    if (!output.exists()) return fail(QStringLiteral("The test export directory does not exist."));
+
+    if (!openStructure(QDir(applicationPaths().project).filePath(QStringLiteral("resources/1CRN.pdb")))) {
+        return fail(QStringLiteral("Could not load the 1CRN figure fixture."));
+    }
+    const auto protein = *scene_->activeObjectId();
+    (void)scene_->setObjectVisible(*water, false);
+    dispatcher_->setRepresentation(Representation::Cartoon);
+    dispatcher_->setColorScheme(ColorScheme::Sequence);
+    viewport_->fitToScene();
+    dispatcher_->selectAtom(protein, scene_->molecule()->atoms()[30].id);
+    viewport_->setLabelMode(LabelMode::SelectedResidues);
+    viewport_->setLighting(LightingPreset::Soft);
+    viewport_->setBackground(Qt::white);
+    (void)scene_->setObjectOpacity(protein, 0.55);
+
+    QString error;
+    const FigureOptions figure{{3200, 1800}, true, true};
+    const auto pngPath = output.filePath(QStringLiteral("figure.png"));
+    if (!saveFigure(*viewport_, pngPath, figure, error)) return fail(error);
+    const QImage png(pngPath);
+    int translucent = 0;
+    for (int y = 0; y < png.height(); y += 2) {
+        for (int x = 0; x < png.width(); x += 2) {
+            const auto alpha = png.pixelColor(x, y).alpha();
+            if (alpha >= 90 && alpha <= 235) ++translucent;
+        }
+    }
+    const bool pngOk = png.size() == figure.pixels && png.pixelColor(0, 0).alpha() == 0 && translucent > 1000 &&
+                       std::abs(png.dotsPerMeterX() - 11811) <= 1;
+    const QSize compareSize(900, 640);
+    const auto labeled = viewport_->renderImage(compareSize, false, true, error);
+    const auto unlabeled = viewport_->renderImage(compareSize, false, false, error);
+    viewport_->setLighting(LightingPreset::Flat);
+    const auto flat = viewport_->renderImage(compareSize, false, false, error);
+    const bool appearanceOk = !unlabeled.isNull() && !labeled.isNull() && !flat.isNull() &&
+        unlabeled.pixelColor(0, 0) == QColor(Qt::white) && labeled != unlabeled && flat != unlabeled;
+
+    const auto svgPath = output.filePath(QStringLiteral("figure.svg"));
+    if (!saveFigure(*viewport_, svgPath, {compareSize, true, true, true}, error)) return fail(error);
+    const auto contents = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+    };
+    const auto svg = contents(svgPath);
+    const bool svgOk = svg.contains("data:image/png;base64,") && svg.contains("<text ") && svg.contains("viewBox=\"0 0 900 640\"");
+
+    dispatcher_->closeObject(protein);
+    dispatcher_->setObjectVisible(*water, true);
+    dispatcher_->setActiveObject(*water);
+    dispatcher_->setRepresentation(Representation::SpaceFilling);
+    dispatcher_->setColorScheme(ColorScheme::Element);
+    dispatcher_->selectAtom(std::nullopt);
+    viewport_->setLabelMode(LabelMode::None);
+    viewport_->fitToScene();
+    if (!dispatcher_->setTrajectoryFrame(*water, 1)) return fail(QStringLiteral("Could not set the live trajectory frame."));
+    const auto object = *scene_->object(*water);
+    const auto generation = scene_->generation();
+    const auto camera = viewport_->cameraState();
+    const FigureOptions animation{{640, 480}, true, false};
+    const auto liveImage = viewport_->renderImage(animation.pixels, true, false, error);
+    const auto animationPath = output.filePath(QStringLiteral("animation.png"));
+    if (!exportTrajectory(animationPath, object, animation, 0, 1, 3, 12, [](int) { return false; }, error)) return fail(error);
+    const auto apng = contents(animationPath);
+    const QImage firstFrame(animationPath);
+    const auto afterExport = viewport_->renderImage(animation.pixels, true, false, error);
+    const bool animationOk = firstFrame.size() == animation.pixels && apng.contains("acTL") && apng.contains("fdAT") &&
+        !afterExport.isNull() && !liveImage.isNull() && afterExport == liveImage && scene_->generation() == generation &&
+        scene_->object(*water)->frameIndex == 1 && viewport_->cameraState() == camera;
+    const bool cancelled = !exportTrajectory(animationPath, object, animation, 0, 1, 3, 12,
+        [](int frame) { return frame == 1; }, error) && error.isEmpty() && contents(animationPath) == apng;
+    const bool invalidSize = viewport_->renderImage(QSize(8192, 8192), true, false, error).isNull() && !error.isEmpty();
+    if (report) {
+        const auto verdict = [](bool pass) { return pass ? QStringLiteral("passed") : QStringLiteral("failed"); };
+        *report = QStringLiteral("High-resolution PNG with partial alpha and print metadata: %1\n"
+                                 "Background, labels, and lighting: %2\nSVG with editable labels: %3\n"
+                                 "Animation and unchanged live frame: %4\nCancelled writes and oversized images: %5")
+                      .arg(verdict(pngOk), verdict(appearanceOk), verdict(svgOk), verdict(animationOk), verdict(cancelled && invalidSize));
+    }
+    return pngOk && appearanceOk && svgOk && animationOk && cancelled && invalidSize;
+}
+
+bool MainWindow::runWorkspaceSelfTest(const QString& trajectory, QString* report) {
+    const auto fail = [report](const QString& message) {
+        if (report) *report = message;
+        return false;
+    };
+    const auto initial = scene_->activeObjectId();
+    const auto molecule = scene_->molecule();
+    if (!initial || !molecule || molecule->atoms().size() != 3) return fail(QStringLiteral("Open the water topology fixture."));
+    QTemporaryDir temporary;
+    QDir parent(temporary.path());
+    if (!temporary.isValid() || !parent.mkdir(QStringLiteral("original"))) return fail(QStringLiteral("Could not prepare test files."));
+    const auto original = parent.filePath(QStringLiteral("original/"));
+    const auto topology = original + QStringLiteral("water λ.xyz");
+    const auto reference = original + QStringLiteral("reference.xyz");
+    const auto frames = original + QStringLiteral("frames.xyz");
+    const auto source = QFileInfo(molecule->sourcePath()).absoluteFilePath();
+    if (!QFile::copy(source, topology) || !QFile::copy(source, reference) || !QFile::copy(trajectory, frames)) {
+        return fail(QStringLiteral("Could not copy the water fixtures."));
+    }
+    dispatcher_->closeObject(*initial);
+    QString message;
+    const auto emptyProject = original + QStringLiteral("empty.jlmol");
+    if (!saveWorkspace(emptyProject, message) || !openWorkspace(emptyProject, message)) return fail(message);
+    if (scene_->objectCount() != 0) return fail(QStringLiteral("Empty workspace unexpectedly contains structures."));
+    if (!openStructure(topology) || !attachTrajectory(frames)) return fail(QStringLiteral("Could not load the copied trajectory."));
+    const auto movingId = *scene_->activeObjectId();
+    if (!openStructure(reference)) return fail(QStringLiteral("Could not load the reference structure."));
+    const auto referenceId = *scene_->activeObjectId();
+    const auto& atoms = molecule->atoms();
+    const std::vector<std::uint64_t> selected{atoms[1].id, atoms[0].id};
+    const std::vector<float> rgb{0.2F, 0.5F, 0.9F, 0.3F, 0.6F, 0.7F, 0.8F, 0.2F, 0.1F};
+    scene_->setAtomColors(movingId, rgb);
+    (void)scene_->setRepresentation(movingId, Representation::SpaceFilling);
+    (void)scene_->setObjectOpacity(movingId, 0.625);
+    (void)scene_->setObjectVisible(referenceId, false);
+    (void)scene_->setColorScheme(referenceId, ColorScheme::Chain);
+    dispatcher_->selectAtoms(movingId, selected);
+    if (!showContactMap(1.5, false) || !dispatcher_->setTrajectoryFrame(movingId, 2)) {
+        return fail(QStringLiteral("Could not prepare the pinned contact map."));
+    }
+    const TrajectoryAnalysisPanel::Settings analysis{TrajectoryAnalysisPanel::Metric::Pca, false, true, 2, 2, 2, true};
+    if (!trajectoryAnalysis_->restoreSettings(analysis)) return fail(QStringLiteral("Could not calculate the original PCA plot."));
+    trajectoryPanel_->restorePlaybackRate(19);
+    const MolecularViewport::CameraState camera{QQuaternion::fromEulerAngles(12.F, 44.F, 8.F),
+        QVector3D(0.25F, -0.75F, 0.F), QVector3D(0.5F, 0.25F, 1.F), 17.F, 4.F, true, LabelMode::SelectedAtoms,
+        QColor(250, 250, 245), LightingPreset::Soft};
+    viewport_->restoreCamera(camera);
+    addDockWidget(Qt::RightDockWidgetArea, trajectoryDock_);
+    trajectoryDock_->hide();
+    trajectoryAnalysisDock_->show();
+    QCoreApplication::processEvents();
+
+    const bool protectedInput = !saveWorkspace(topology, message) && message.contains(QStringLiteral("separate"));
+    if (!saveWorkspace(original + QStringLiteral("project.jlmol"), message)) return fail(message);
+    dispatcher_->setActiveObject(referenceId);
+    viewport_->setViewPreset(ViewPreset::Top);
+    viewport_->setOrthographic(false);
+    viewport_->setBackground(Qt::black);
+    viewport_->setLighting(LightingPreset::Flat);
+    addDockWidget(Qt::LeftDockWidgetArea, trajectoryDock_);
+    trajectoryDock_->show();
+    trajectoryAnalysisDock_->hide();
+    if (!parent.rename(QStringLiteral("original"), QStringLiteral("moved"))) return fail(QStringLiteral("Could not relocate the workspace."));
+    const auto moved = parent.filePath(QStringLiteral("moved/"));
+    const auto project = moved + QStringLiteral("project.jlmol");
+    if (!openWorkspace(project, message)) return fail(message);
+    QCoreApplication::processEvents();
+
+    const auto restored = scene_->objects();
+    if (restored.size() != 2) return fail(QStringLiteral("Workspace did not restore both structures."));
+    const auto& first = restored[0];
+    const auto& second = restored[1];
+    const bool sceneMatches = scene_->activeObjectId() == first.id && scene_->selectedObjectId() == first.id &&
+        scene_->selectedAtomIds() == selected && !scene_->object(movingId) && !scene_->object(referenceId) &&
+        first.visible && !second.visible && first.opacity == 0.625 && first.representation == Representation::SpaceFilling &&
+        first.colorScheme == ColorScheme::Custom && first.atomColors && (*first.atomColors)[1][2] == rgb[5] &&
+        second.colorScheme == ColorScheme::Chain && first.trajectory && first.frameIndex == 2 &&
+        first.molecule->atoms()[0].position.z == 2.F && trajectoryPanel_->playbackRate() == 19;
+    const bool viewMatches = viewport_->cameraState() == camera && projectionActions_->checkedAction()->data().toBool() &&
+        labelActions_->checkedAction()->data().toInt() == static_cast<int>(camera.labels) &&
+        lightingActions_->checkedAction()->data().toInt() == static_cast<int>(camera.lighting) &&
+        dockWidgetArea(trajectoryDock_) == Qt::RightDockWidgetArea && trajectoryDock_->isHidden() &&
+        !trajectoryAnalysisDock_->isHidden() && !analysisDock_->isHidden();
+    const bool analysisMatches = trajectoryAnalysis_->settings() == analysis && contactMap_ && contactMap_->frame == 0 &&
+        contactMap_->cutoff == 1.5 && !contactMap_->cAlphaOnly &&
+        analysisSummary_->text().contains(QStringLiteral("Map frame 1 : viewer frame 3"));
+
+    QFile saved(project);
+    if (!saved.open(QIODevice::ReadOnly)) return fail(QStringLiteral("Could not inspect the saved workspace."));
+    auto invalid = QJsonDocument::fromJson(saved.readAll()).object();
+    saved.close();
+    invalid["layout"] = QString::fromLatin1(QByteArray("invalid Qt layout").toBase64());
+    QFile malformed(moved + QStringLiteral("bad-layout.jlmol"));
+    const auto invalidBytes = QJsonDocument(invalid).toJson();
+    if (!malformed.open(QIODevice::WriteOnly) || malformed.write(invalidBytes) != invalidBytes.size()) {
+        return fail(QStringLiteral("Could not prepare the corrupt workspace."));
+    }
+    malformed.close();
+    const auto generation = scene_->generation();
+    const auto layout = saveState(WorkspaceSettings::layoutVersion);
+    const bool rejectedLayout = !openWorkspace(malformed.fileName(), message) && message.contains(QStringLiteral("panel layout"));
+    const auto movedFrames = moved + QStringLiteral("frames.xyz");
+    if (!QFile::rename(movedFrames, movedFrames + QStringLiteral(".missing"))) return fail(QStringLiteral("Could not hide the trajectory fixture."));
+    const bool rejectedMissing = !openWorkspace(project, message) && message.contains(QStringLiteral("trajectory file")) &&
+        message.contains(QStringLiteral("frames.xyz"));
+    const bool preserved = scene_->generation() == generation && viewport_->cameraState() == camera &&
+        saveState(WorkspaceSettings::layoutVersion) == layout;
+    if (!QFile::rename(movedFrames + QStringLiteral(".missing"), movedFrames)) return fail(QStringLiteral("Could not restore the trajectory fixture."));
+
+    const auto alignmentProject = moved + QStringLiteral("alignment.jlmol");
+    // The two hydrogens in the XYZ topology share the same atom identity. Use a PDB for alignment.
+    const auto peptide = QFileInfo(source).dir().filePath(QStringLiteral("mini.pdb"));
+    if (!openStructure(peptide)) return fail(QStringLiteral("Could not open the alignment reference fixture."));
+    const auto peptideReference = *scene_->activeObjectId();
+    if (!openStructure(peptide) || !showAlignment(peptideReference)) {
+        return fail(QStringLiteral("Could not calculate the alignment fixture."));
+    }
+    if (!saveWorkspace(alignmentProject, message)) return fail(message);
+    dispatcher_->setActiveObject(second.id);
+    if (!openWorkspace(alignmentProject, message)) return fail(message);
+    const auto aligned = scene_->objects();
+    const bool alignmentMatches = aligned.size() == 4 && alignmentReference_ == aligned[2].id &&
+        analysisSummary_->text().contains(QStringLiteral("RMSD after alignment:"));
+
+    if (report) {
+        const auto verdict = [](bool passed) { return passed ? QStringLiteral("passed") : QStringLiteral("failed"); };
+        *report = QStringLiteral("Relocated files, object styles, ordered selection, and paused frame: %1\n"
+                                 "Camera and dock layout: %2\nPCA and pinned contact map: %3\n"
+                                 "Referenced inputs protected and failed opens preserve state: %4\nAlignment settings: %5")
+            .arg(verdict(sceneMatches), verdict(viewMatches), verdict(analysisMatches),
+                 verdict(protectedInput && rejectedLayout && rejectedMissing && preserved), verdict(alignmentMatches));
+    }
+    return sceneMatches && viewMatches && analysisMatches && protectedInput && rejectedLayout && rejectedMissing && preserved && alignmentMatches;
 }
 
 bool MainWindow::runScriptEditorSelfTest(QString* report) {
@@ -901,33 +1526,206 @@ void MainWindow::chooseTrajectory() {
     if (!path.isEmpty()) attachTrajectory(path);
 }
 
+void MainWindow::chooseWorkspaceToOpen() {
+    const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Workspace"), {},
+                                                   QStringLiteral("JlMol workspaces (*.jlmol)"));
+    if (path.isEmpty()) return;
+    QString message;
+    if (!openWorkspace(path, message)) showError(message);
+    else statusBar()->showMessage(message, 10000);
+}
+
+void MainWindow::chooseWorkspaceToSave() {
+    QFileDialog dialog(this, QStringLiteral("Save Workspace"), {}, QStringLiteral("JlMol workspaces (*.jlmol)"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setDefaultSuffix(QStringLiteral("jlmol"));
+    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) return;
+    QString message;
+    if (!saveWorkspace(dialog.selectedFiles().first(), message)) showError(message);
+    else statusBar()->showMessage(message, 6000);
+}
+
+void MainWindow::chooseFigureExport() {
+    if (!scene_->objectCount()) {
+        showError(QStringLiteral("Open a structure before exporting a figure."));
+        return;
+    }
+    const auto request = chooseExportOptions(this, viewport_->size());
+    if (!request) return;
+    const bool svg = request->figure.svg;
+    const auto suffix = svg ? QStringLiteral("svg") : QStringLiteral("png");
+    const auto path = chooseExportPath(this, QStringLiteral("Export Figure"),
+        svg ? QStringLiteral("SVG files (*.svg)") : QStringLiteral("PNG images (*.png)"), suffix);
+    if (path.isEmpty()) return;
+    if (QFileInfo(path).suffix().compare(suffix, Qt::CaseInsensitive) != 0) {
+        showError(QStringLiteral("Use a .%1 filename for this figure.").arg(suffix));
+        return;
+    }
+    QString error;
+    if (!saveFigure(*viewport_, path, request->figure, error)) showError(error);
+    else statusBar()->showMessage(QStringLiteral("Exported %1").arg(QFileInfo(path).fileName()), 6000);
+}
+
+void MainWindow::chooseAnimationExport() {
+    const auto id = scene_->activeObjectId();
+    const auto object = id ? scene_->object(*id) : std::nullopt;
+    if (!object || !object->trajectory || !object->visible || object->opacity <= 0.0) {
+        showError(QStringLiteral("Select a visible structure with an attached trajectory before exporting an animation."));
+        return;
+    }
+    const auto frames = object->trajectory->frameCount();
+    if (frames > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        showError(QStringLiteral("This trajectory has too many frames for the animation controls."));
+        return;
+    }
+    const auto request = chooseExportOptions(this, viewport_->size(), static_cast<int>(frames), trajectoryPanel_->playbackRate());
+    if (!request) return;
+    const auto path = chooseExportPath(this, QStringLiteral("Export Animation"), QStringLiteral("Animated PNG (*.png)"), QStringLiteral("png"));
+    if (path.isEmpty()) return;
+    if (QFileInfo(path).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0) {
+        showError(QStringLiteral("Use a .png filename for the animation."));
+        return;
+    }
+    trajectoryPanel_->pause();
+    viewport_->restoreCamera(viewport_->cameraState());
+    QProgressDialog progress(QStringLiteral("Rendering trajectory frames…"), QStringLiteral("Cancel"), 0, request->count, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    const auto cancelled = [&progress](int frame) {
+        progress.setValue(frame);
+        return progress.wasCanceled();
+    };
+    QString error;
+    const bool saved = exportTrajectory(path, *object, request->figure, request->first, request->stride, request->count,
+                                        request->fps, cancelled, error);
+    progress.hide();
+    if (!saved && !error.isEmpty()) showError(error);
+    else if (saved) statusBar()->showMessage(QStringLiteral("Exported %1").arg(QFileInfo(path).fileName()), 6000);
+    else statusBar()->showMessage(QStringLiteral("Animation export cancelled."), 6000);
+}
+
+bool MainWindow::exportTrajectory(const QString& path, const MolecularObject& object, const FigureOptions& options,
+                                  int first, int step, int count, int fps, const std::function<bool(int)>& cancelled,
+                                  QString& error) {
+    try {
+        auto frameObject = object;
+        return saveAnimatedPng(path, options.pixels, count, fps, [&](int index) -> QImage {
+            if (cancelled(index)) return {};
+            const auto frame = object.trajectory->readFrame(static_cast<std::size_t>(first) + std::size_t(index) * step);
+            frameObject.molecule = std::make_shared<Molecule>(object.molecule->withPositions(frame->positions));
+            return viewport_->renderImage(options.pixels, options.transparent, options.labels, error, &frameObject);
+        }, error);
+    } catch (const std::exception& exception) {
+        error = QString::fromUtf8(exception.what());
+        return false;
+    }
+}
+
+bool MainWindow::saveWorkspace(const QString& path, QString& message) {
+    try {
+        WorkspaceSettings settings{viewport_->cameraState(), saveState(WorkspaceSettings::layoutVersion),
+                                   trajectoryAnalysis_->settings(), trajectoryPanel_->playbackRate(), {}, {}};
+        if (contactMap_ && scene_->activeObjectId() == contactMap_->object) {
+            settings.contactMap = WorkspaceContactMap{contactMap_->cutoff, contactMap_->cAlphaOnly, contactMap_->frame};
+        }
+        if (alignmentReference_) {
+            const auto objects = scene_->objects();
+            const auto reference = std::find_if(objects.begin(), objects.end(), [this](const auto& object) {
+                return object.id == *alignmentReference_;
+            });
+            if (reference != objects.end()) settings.alignmentReference = reference - objects.begin();
+        }
+        writeWorkspace(path, *scene_, settings);
+        message = QStringLiteral("Saved workspace %1").arg(QFileInfo(path).fileName());
+        return true;
+    } catch (const std::exception& error) {
+        message = QString::fromUtf8(error.what());
+        return false;
+    }
+}
+
+bool MainWindow::openWorkspace(const QString& path, QString& message) {
+    MolecularScene staged;
+    WorkspaceSettings settings{};
+    try {
+        settings = readWorkspace(path, staged);
+    } catch (const std::exception& error) {
+        message = QString::fromUtf8(error.what());
+        return false;
+    }
+
+    const auto previousLayout = saveState(WorkspaceSettings::layoutVersion);
+    if (!restoreState(settings.layout, WorkspaceSettings::layoutVersion)) {
+        (void)restoreState(previousLayout, WorkspaceSettings::layoutVersion);
+        message = QStringLiteral("This workspace contains an invalid or incompatible panel layout.");
+        return false;
+    }
+    scene_->replaceWith(std::move(staged));
+    clearContactMap();
+    viewport_->restoreCamera(settings.camera);
+    for (auto* action : projectionActions_->actions()) {
+        if (action->data().toBool() == settings.camera.orthographic) action->setChecked(true);
+    }
+    for (auto* action : labelActions_->actions()) {
+        if (action->data().toInt() == static_cast<int>(settings.camera.labels)) action->setChecked(true);
+    }
+    for (auto* action : lightingActions_->actions()) {
+        if (action->data().toInt() == static_cast<int>(settings.camera.lighting)) action->setChecked(true);
+    }
+    trajectoryPanel_->restorePlaybackRate(settings.playbackRate);
+    viewport_->sceneChanged();
+    refreshSceneUi();
+
+    bool analysisRestored = trajectoryAnalysis_->restoreSettings(settings.trajectoryAnalysis);
+    if (settings.contactMap) {
+        const auto& map = *settings.contactMap;
+        analysisRestored = showContactMap(map.cutoff, map.cAlphaOnly, map.frame, false) && analysisRestored;
+    } else if (settings.alignmentReference) {
+        const auto reference = scene_->objects()[*settings.alignmentReference].id;
+        analysisRestored = showAlignment(reference, false) && analysisRestored;
+    }
+    message = QStringLiteral("Opened workspace %1").arg(QFileInfo(path).fileName());
+    if (!analysisRestored) message += QStringLiteral(". Some analyses could not be recalculated.");
+    return true;
+}
+
 void MainWindow::refreshSceneUi() {
     const QSignalBlocker blocker(objectTree_);
-    objectTree_->clear();
     const auto objects = scene_->objects();
     const auto activeId = scene_->activeObjectId();
     if (objects.empty()) {
+        objectTree_->clear();
         atomCountLabel_->setText(QStringLiteral("No structure loaded"));
         refreshFrameUi();
         return;
     }
     std::size_t atomTotal = 0;
     std::size_t bondTotal = 0;
+    std::unordered_map<ObjectId, QTreeWidgetItem*> previousRoots;
+    for (int i = 0; i < objectTree_->topLevelItemCount(); ++i) {
+        auto* root = objectTree_->topLevelItem(i);
+        previousRoots.emplace(root->data(0, objectIdRole).toULongLong(), root);
+    }
+    QTreeWidgetItem* activeRoot = nullptr;
     for (const auto& object : objects) {
         if (!object.molecule) continue;
         const auto& molecule = *object.molecule;
         atomTotal += molecule.atoms().size();
         bondTotal += molecule.bonds().size();
-        auto* root = new QTreeWidgetItem(objectTree_, {QString::fromStdString(molecule.name())});
-        root->setData(0, objectIdRole, QVariant::fromValue<qulonglong>(object.id));
-        root->setData(0, itemKindRole, objectItemKind);
-        root->setFlags(root->flags() | Qt::ItemIsUserCheckable);
+        const auto previous = previousRoots.extract(object.id);
+        auto* root = previous.empty() ? new QTreeWidgetItem(objectTree_, {QString::fromStdString(molecule.name())})
+                                      : previous.mapped();
+        if (activeId == object.id) activeRoot = root;
         root->setCheckState(0, object.visible ? Qt::Checked : Qt::Unchecked);
         root->setToolTip(0, QStringLiteral("%1\nOpacity: %2%")
                                .arg(QString::fromStdString(molecule.sourcePath().string()))
                                .arg(object.opacity * 100.0, 0, 'g', 4));
+        if (!previous.empty()) continue;
+        // Frame changes keep the object's topology and explorer children intact.
+        root->setData(0, objectIdRole, QVariant::fromValue<qulonglong>(object.id));
+        root->setData(0, itemKindRole, objectItemKind);
+        root->setFlags(root->flags() | Qt::ItemIsUserCheckable);
         root->setExpanded(objects.size() == 1);
-        if (activeId == object.id) objectTree_->setCurrentItem(root);
         std::map<std::string, std::map<std::pair<std::string, int>, int>> hierarchy;
         for (const auto& atom : molecule.atoms()) hierarchy[atom.chainId][{atom.residueName, atom.residueId}]++;
         for (const auto& [chain, residues] : hierarchy) {
@@ -946,6 +1744,8 @@ void MainWindow::refreshSceneUi() {
             }
         }
     }
+    for (const auto& [id, root] : previousRoots) delete root;
+    if (objectTree_->currentItem() != activeRoot) objectTree_->setCurrentItem(activeRoot);
     atomCountLabel_->setText(QStringLiteral("%1 objects : %2 atoms : %3 bonds : %4 : color %5")
                                  .arg(objects.size())
                                  .arg(atomTotal)
@@ -958,16 +1758,30 @@ void MainWindow::refreshSceneUi() {
 void MainWindow::refreshFrameUi() {
     trajectoryPanel_->refresh();
     trajectoryAnalysis_->refresh();
-    analysisMapScroll_->hide();
+    if (refreshContactMap()) {
+        updateInspector();
+        return;
+    }
+    alignmentReference_.reset();
+    if (analysisDock_->isVisible()) refreshDefaultAnalysis();
+    else defaultAnalysisPending_ = true;
+    updateInspector();
+}
+
+void MainWindow::refreshDefaultAnalysis() {
+    defaultAnalysisPending_ = false;
     if (const auto molecule = scene_->molecule()) {
+        if (molecule != radiusSource_.lock()) {
+            cachedRadius_ = analysis::radiusOfGyration(*molecule);
+            radiusSource_ = molecule;
+        }
         analysisSummary_->setText(QStringLiteral("<h3>%1</h3><p>Radius of gyration: <b>%2 Å</b></p>"
                                                 "<p>Shift-click 2, 3, or 4 atoms for distance, angle, or dihedral.</p>")
                                       .arg(QString::fromStdString(molecule->name()))
-                                      .arg(analysis::radiusOfGyration(*molecule), 0, 'f', 3));
+                                      .arg(cachedRadius_, 0, 'f', 3));
     } else {
         analysisSummary_->setText(QStringLiteral("Open a structure to calculate geometric properties."));
     }
-    updateInspector();
 }
 
 void MainWindow::updateInspector() {
@@ -1002,7 +1816,7 @@ void MainWindow::updateInspector() {
                                 .arg(atoms.size()).arg(measurement)
                                 .arg(QString::fromStdString(atoms.front().residueName)).arg(atoms.front().residueId)
                                 .arg(QString::fromStdString(atoms.front().chainId)));
-        if (analysisDock_->isVisible() && !measurement.isEmpty()) analysisSummary_->setText(measurement);
+        if (analysisDock_->isVisible() && !contactMap_ && !measurement.isEmpty()) analysisSummary_->setText(measurement);
         return;
     }
     const auto& atom = atoms.front();

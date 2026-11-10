@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define JLMOL_API_VERSION 6
+#define JLMOL_API_VERSION 7
 
 typedef void (*jlmol_scene_changed_callback)(void* user_data);
 
@@ -56,6 +56,8 @@ JLMOL_API int jlmol_copy_trajectory_frame(uint64_t object_id, size_t index,
                                          double* coordinates, size_t capacity);
 JLMOL_API int jlmol_set_object_representation(uint64_t object_id, const char* representation);
 JLMOL_API int jlmol_set_object_color_scheme(uint64_t object_id, const char* color_scheme);
+/* Copies RGB triples in topology order. component_count counts floats, not atoms. */
+JLMOL_API int jlmol_set_object_atom_colors(uint64_t object_id, const float* rgb, size_t component_count);
 JLMOL_API const char* jlmol_object_representation(uint64_t object_id);
 JLMOL_API const char* jlmol_object_color_scheme(uint64_t object_id);
 JLMOL_API int jlmol_set_active_representation(const char* representation);

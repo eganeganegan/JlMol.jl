@@ -16,7 +16,10 @@ JlMol is a native molecular viewer built with C++20, Qt 6 Widgets, OpenGL, Chemf
 - Mass-weighted radius of gyration in the dockable analysis workspace and Julia API
 - Rigid structural alignment, RMSD with validated atom matching, and adjustable atom contact maps in the GUI and Julia
 - XTC, TRR, DCD, and multi-frame XYZ trajectory playback with a timeline and Julia frame access
-- Linked trajectory RMSD and RMSF plots that seek frames or select atoms
+- Linked RMSD, RMSF, and PCA trajectory plots with optional cluster coloring, plus interactive atom contact maps
+- Local Julia plugins for desktop commands, analyses, and per-atom coloring
+- Save and reopen workspaces with the scene, camera, trajectory position, analysis settings, and panel layout
+- High-resolution PNG, SVG with editable labels, and animated PNG export
 - Persistent embedded Julia console with captured output and stack traces
 - Dockable multi-tab Julia editor with line numbers, syntax highlighting, file operations, search/replace, and run selection/file
 - Julia commands for querying and changing the active native scene
@@ -62,5 +65,17 @@ Use **Analysis > Align and Compare Structures** to compare two loaded objects, o
 
 To play a simulation, open its topology and use **File > Attach Trajectory**. See [trajectories](docs/trajectories.md) for playback controls, Julia examples, and periodic-boundary limits.
 
-After attaching a trajectory, open **Analysis > Trajectory Analysis**. RMSD points seek to frames; RMSF points select atoms. Enable **Selected atoms** to recalculate for the current molecular selection.
+After attaching a trajectory, open **Analysis > Trajectory Analysis**. Click an RMSD or PCA point to seek to its frame, or click an RMSF point to select an atom. Enable **Selected atoms** to recalculate for the current molecular selection. In **Analysis > Contact Map**, click a matrix cell to select its atom pair.
+
+Choose **Plugins > Load Local Plugin** to load the bundled [Structure Tools plugin](examples/plugins/StructureTools.jl) or your own Julia module. The [plugin guide](docs/plugins.md) shows how to add commands, analyses, and coloring methods.
+
+Use **File > Save Workspace** to save your view and **File > Open Workspace** to restore it. See [workspaces](docs/workspaces.md) for how to keep the workspace and its input files portable.
+
+Use **File > Export Figure** for a still image or **File > Export Animation** for a trajectory clip. See [figure export](docs/figure_export.md) for appearance controls, formats, and size limits.
+
+Run `--benchmark` to measure the native viewer at 1,000, 10,000, and 100,000 atoms. See [performance](docs/performance.md) for the workload, timings, and current limits.
+
+The native test suite checks scientific results against analytic cases and independent crambin references. See [scientific methods](docs/scientific_methods.md#numerical-validation) for the fixtures, tolerances, and regeneration steps.
+
+For a standalone macOS build with embedded Qt and Julia, see the [packaging guide](docs/packaging.md).
 

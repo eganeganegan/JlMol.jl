@@ -66,6 +66,7 @@ public:
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
     [[nodiscard]] const std::filesystem::path& sourcePath() const noexcept { return sourcePath_; }
     [[nodiscard]] const std::vector<Atom>& atoms() const noexcept { return atoms_; }
+    [[nodiscard]] const Atom* atom(std::uint64_t id) const noexcept;
     [[nodiscard]] const std::vector<Bond>& bonds() const noexcept { return bonds_; }
     [[nodiscard]] std::vector<Bond> cAlphaTrace() const;
     [[nodiscard]] std::vector<Bond> backboneTrace() const;

@@ -17,7 +17,9 @@ activate!(protein)
 close!(ligand)
 ```
 
-Supported representations are `:ball_and_stick`, `:spacefill`, `:points`, `:lines`, `:c_alpha_trace`, `:backbone`, `:cartoon`, and `:ribbon`. Supported color schemes are `:element`, `:chain`, `:residue`, and `:secondary_structure`.
+Supported representations are `:ball_and_stick`, `:spacefill`, `:points`, `:lines`, `:c_alpha_trace`, `:backbone`, `:cartoon`, and `:ribbon`. Supported color schemes are `:element`, `:chain`, `:residue`, `:secondary_structure`, and `:sequence`.
+
+Use `setatomcolors!(protein, rgb)` to apply your own palette as a `3 × N` matrix with values in `[0, 1]` in topology atom order. Use `colorby!` to switch back to a built-in scheme. See [Julia plugins](plugins.md) for registering reusable coloring methods, commands, and analyses in the desktop menus.
 
 `setopacity!(protein, 0.45)` sets the same per-structure opacity as the GUI. `opacity(protein)` reads it. Values must be finite and in `[0, 1]`; 0 hides the geometry and 1 is fully opaque. `setvisible!` leaves opacity unchanged. Omit the structure argument to use the active object.
 
@@ -38,7 +40,7 @@ The structure argument may be omitted from `distance`, `angle`, and `dihedral` t
 
 `contactmap(mol; cutoff=8.0, atom_name="CA")` returns a symmetric contact matrix with ordered axis IDs. All of these analyses use nonperiodic coordinates. See [scientific methods](scientific_methods.md) for examples, numerical conventions, and size limits.
 
-Use `attachtrajectory!(mol, path)` with a matching topology, `setframe!(mol, frame)` to seek, and `trajectory_info(mol)` to inspect the current frame. `trajectory_frame(mol, frame)`, `trajectory_rmsd(mol)`, and `trajectory_rmsf(mol)` read frames without moving the viewport. Both series functions accept `stride` and `atom_ids`; RMSF returns values paired with atom IDs. See [trajectories](trajectories.md) for linked plots, periodic cell data, and explicit minimum-image distances.
+Use `attachtrajectory!(mol, path)` with a matching topology, `setframe!(mol, frame)` to seek, and `trajectory_info(mol)` to inspect the current frame. `trajectory_frame(mol, frame)`, `trajectory_rmsd(mol)`, `trajectory_rmsf(mol)`, and `trajectory_pca(mol)` read frames without moving the viewport. The analysis functions accept `stride` and `atom_ids`. Pass PCA scores to `cluster_conformations` and use the returned representative indices to look up original frame numbers. See [trajectories](trajectories.md) for linked plots, periodic cell data, and explicit minimum-image distances.
 
 The embedded session executes trusted local Julia code. It is not a security sandbox. Computation is synchronous in the current milestone; avoid long-running expressions during interactive work.
 

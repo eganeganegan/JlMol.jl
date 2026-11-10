@@ -15,3 +15,5 @@ open build/jlmol.app
 
 Set `CMAKE_PREFIX_PATH` to the appropriate Qt installation on other systems. CMake locates Julia through the `julia` executable and embeds an rpath for the development build.
 
+See [packaging](packaging.md) for building and verifying the standalone macOS app and the status of Windows and Linux packaging.
+

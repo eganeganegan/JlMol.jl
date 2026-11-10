@@ -55,10 +55,8 @@ std::optional<jlmol::Vec3> atomPosition(const jlmol::MolecularScene* scene, std:
                                         std::uint64_t atomId) {
     const auto object = scene ? scene->object(objectId) : std::nullopt;
     if (!object || !object->molecule) return std::nullopt;
-    const auto& atoms = object->molecule->atoms();
-    const auto found = std::find_if(atoms.begin(), atoms.end(),
-                                    [atomId](const auto& atom) { return atom.id == atomId; });
-    return found == atoms.end() ? std::nullopt : std::optional<jlmol::Vec3>{found->position};
+    const auto* atom = object->molecule->atom(atomId);
+    return atom ? std::optional<jlmol::Vec3>{atom->position} : std::nullopt;
 }
 
 bool validateResultPointer(double* result) {
@@ -361,6 +359,23 @@ int jlmol_set_object_color_scheme(uint64_t objectId, const char* colorScheme) {
     }
     notifySceneChanged();
     return 0;
+}
+
+int jlmol_set_object_atom_colors(uint64_t objectId, const float* rgb, size_t componentCount) {
+    auto* scene = sceneOrError();
+    if (!scene) return 1;
+    if (!rgb) {
+        lastError = "A non-null RGB buffer is required";
+        return 1;
+    }
+    try {
+        scene->setAtomColors(objectId, std::span{rgb, componentCount});
+        notifySceneChanged();
+        return 0;
+    } catch (const std::exception& error) {
+        lastError = error.what();
+        return 1;
+    }
 }
 
 const char* jlmol_object_representation(uint64_t objectId) {

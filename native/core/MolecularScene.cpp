@@ -22,6 +22,27 @@ void MolecularScene::setMolecule(std::shared_ptr<Molecule> molecule) {
     ++generation_;
 }
 
+void MolecularScene::replaceWith(MolecularScene&& staged) {
+    if (this == &staged) return;
+    std::scoped_lock lock(mutex_, staged.mutex_);
+    activeObjectId_.reset();
+    selectedObjectId_.reset();
+    for (auto& object : staged.objects_) {
+        const auto id = nextObjectId_++;
+        if (staged.activeObjectId_ == object.id) activeObjectId_ = id;
+        if (staged.selectedObjectId_ == object.id) selectedObjectId_ = id;
+        object.id = id;
+    }
+    objects_.swap(staged.objects_);
+    selectedAtomIds_ = std::move(staged.selectedAtomIds_);
+    staged.objects_.clear();
+    staged.activeObjectId_.reset();
+    staged.selectedObjectId_.reset();
+    staged.selectedAtomIds_.clear();
+    ++staged.generation_;
+    ++generation_;
+}
+
 ObjectId MolecularScene::addMolecule(std::shared_ptr<Molecule> molecule) {
     if (!molecule) return 0;
     std::scoped_lock lock(mutex_);
@@ -191,11 +212,15 @@ std::optional<Representation> MolecularScene::representation(ObjectId id) const 
 }
 
 void MolecularScene::setColorScheme(ColorScheme scheme) {
+    if (scheme == ColorScheme::Custom) return;
     std::scoped_lock lock(mutex_);
     defaultColorScheme_ = scheme;
     if (activeObjectId_) {
         const auto found = findObject(*activeObjectId_);
-        if (found != objects_.end()) found->colorScheme = scheme;
+        if (found != objects_.end()) {
+            found->colorScheme = scheme;
+            found->atomColors.reset();
+        }
     }
     ++generation_;
 }
@@ -203,10 +228,30 @@ void MolecularScene::setColorScheme(ColorScheme scheme) {
 bool MolecularScene::setColorScheme(ObjectId id, ColorScheme scheme) {
     std::scoped_lock lock(mutex_);
     const auto found = findObject(id);
-    if (found == objects_.end()) return false;
+    if (found == objects_.end() || scheme == ColorScheme::Custom) return false;
     found->colorScheme = scheme;
+    found->atomColors.reset();
     ++generation_;
     return true;
+}
+
+void MolecularScene::setAtomColors(ObjectId id, std::span<const float> rgb) {
+    std::scoped_lock lock(mutex_);
+    const auto found = findObject(id);
+    if (found == objects_.end() || !found->molecule) throw std::invalid_argument("Molecular object does not exist");
+    const auto count = found->molecule->atoms().size();
+    if (rgb.size() % 3 != 0 || rgb.size() / 3 != count || count == 0) {
+        throw std::invalid_argument("An RGB triple is required for each atom");
+    }
+    if (!std::all_of(rgb.begin(), rgb.end(), [](float value) { return value >= 0 && value <= 1; })) {
+        throw std::invalid_argument("RGB components must be finite and in [0, 1]");
+    }
+    auto colors = std::make_shared<std::vector<std::array<float, 3>>>();
+    colors->reserve(count);
+    for (std::size_t i = 0; i < rgb.size(); i += 3) colors->push_back({rgb[i], rgb[i + 1], rgb[i + 2]});
+    found->atomColors = std::move(colors);
+    found->colorScheme = ColorScheme::Custom;
+    ++generation_;
 }
 
 ColorScheme MolecularScene::colorScheme() const {
@@ -267,10 +312,7 @@ void MolecularScene::selectAtoms(ObjectId objectId, std::vector<std::uint64_t> a
     std::scoped_lock lock(mutex_);
     const auto object = findObject(objectId);
     if (object == objects_.end() || !object->molecule) return;
-    atomIds.erase(std::remove_if(atomIds.begin(), atomIds.end(), [&object](std::uint64_t id) {
-        return std::none_of(object->molecule->atoms().begin(), object->molecule->atoms().end(),
-                            [id](const Atom& atom) { return atom.id == id; });
-    }), atomIds.end());
+    std::erase_if(atomIds, [&object](std::uint64_t id) { return !object->molecule->atom(id); });
     selectedObjectId_ = atomIds.empty() ? std::nullopt : std::optional<ObjectId>{objectId};
     selectedAtomIds_ = std::move(atomIds);
     activeObjectId_ = objectId;
@@ -297,9 +339,8 @@ std::optional<Atom> MolecularScene::selectedAtom() const {
     if (!selectedObjectId_ || selectedAtomIds_.empty()) return std::nullopt;
     const auto object = findObject(*selectedObjectId_);
     if (object == objects_.end() || !object->molecule) return std::nullopt;
-    const auto found = std::find_if(object->molecule->atoms().begin(), object->molecule->atoms().end(),
-                                    [this](const Atom& atom) { return atom.id == selectedAtomIds_.back(); });
-    return found == object->molecule->atoms().end() ? std::nullopt : std::optional<Atom>{*found};
+    const auto* atom = object->molecule->atom(selectedAtomIds_.back());
+    return atom ? std::optional<Atom>{*atom} : std::nullopt;
 }
 
 std::vector<Atom> MolecularScene::selectedAtoms() const {
@@ -310,9 +351,7 @@ std::vector<Atom> MolecularScene::selectedAtoms() const {
     if (object == objects_.end() || !object->molecule) return result;
     result.reserve(selectedAtomIds_.size());
     for (const auto id : selectedAtomIds_) {
-        const auto found = std::find_if(object->molecule->atoms().begin(), object->molecule->atoms().end(),
-                                        [id](const Atom& atom) { return atom.id == id; });
-        if (found != object->molecule->atoms().end()) result.push_back(*found);
+        if (const auto* atom = object->molecule->atom(id)) result.push_back(*atom);
     }
     return result;
 }
@@ -358,6 +397,8 @@ std::string toString(ColorScheme scheme) {
     case ColorScheme::Chain: return "chain";
     case ColorScheme::Residue: return "residue";
     case ColorScheme::SecondaryStructure: return "secondary_structure";
+    case ColorScheme::Sequence: return "sequence";
+    case ColorScheme::Custom: return "custom";
     }
     return "unknown";
 }
@@ -371,6 +412,7 @@ std::optional<ColorScheme> colorSchemeFromString(const std::string& value) {
     if (key == "chain") return ColorScheme::Chain;
     if (key == "residue") return ColorScheme::Residue;
     if (key == "secondary_structure" || key == "secondary") return ColorScheme::SecondaryStructure;
+    if (key == "sequence") return ColorScheme::Sequence;
     return std::nullopt;
 }
 

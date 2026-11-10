@@ -100,6 +100,15 @@ void TrajectoryPanel::refresh() {
     summary_->setText(text);
 }
 
+int TrajectoryPanel::playbackRate() const { return rate_->value(); }
+
+void TrajectoryPanel::pause() { play_->setChecked(false); }
+
+void TrajectoryPanel::restorePlaybackRate(int rate) {
+    pause();
+    rate_->setValue(rate);
+}
+
 void TrajectoryPanel::seek(int oneBasedFrame) {
     if (!object_ || !trajectory_) return;
     if (!dispatcher_->setTrajectoryFrame(*object_, static_cast<std::size_t>(oneBasedFrame - 1))) {

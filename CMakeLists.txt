@@ -85,14 +85,19 @@ endif()
 set_target_properties(jlmol_core PROPERTIES OUTPUT_NAME jlmol_core)
 
 set(JLMOL_APP_SOURCES
+    native/app/ApplicationPaths.cpp
     native/app/main.cpp
     native/commands/CommandDispatcher.cpp
+    native/gui/ContactMapWidget.cpp
+    native/gui/FigureExport.cpp
     native/gui/JuliaConsole.cpp
     native/gui/MainWindow.cpp
     native/gui/MolecularViewport.cpp
+    native/gui/PerformanceBenchmark.cpp
     native/gui/ScriptEditor.cpp
     native/gui/TrajectoryAnalysisPanel.cpp
     native/gui/TrajectoryPanel.cpp
+    native/gui/WorkspaceFile.cpp
     native/renderer/CartoonGeometry.cpp
     native/scripting/JuliaRuntime.cpp
 )
@@ -106,6 +111,7 @@ target_link_libraries(jlmol PRIVATE
 target_compile_definitions(jlmol PRIVATE
     JLMOL_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     JLMOL_CORE_LIBRARY_PATH="$<TARGET_FILE:jlmol_core>"
+    JLMOL_CORE_LIBRARY_NAME="$<TARGET_FILE_NAME:jlmol_core>"
 )
 
 if(JLMOL_ENABLE_JULIA)
@@ -133,6 +139,7 @@ if(JLMOL_ENABLE_JULIA)
         set_property(TARGET jlmol APPEND PROPERTY BUILD_RPATH
             "${JULIA_ROOT}/lib" "${JULIA_ROOT}/lib/julia")
         message(STATUS "Embedded Julia enabled from ${JULIA_ROOT}")
+        set(JLMOL_EMBEDDED_JULIA TRUE)
     else()
         message(WARNING "Julia development runtime not found; building a disabled console")
     endif()
@@ -142,7 +149,29 @@ if(APPLE)
     set_target_properties(jlmol PROPERTIES
         MACOSX_BUNDLE_BUNDLE_NAME "JlMol"
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.jlmol.desktop"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        INSTALL_RPATH "@executable_path/../Frameworks"
     )
+    if(JLMOL_EMBEDDED_JULIA)
+        set(jlmol_contents "jlmol.app/Contents")
+        set(jlmol_project "${jlmol_contents}/Resources/jlmol")
+        install(TARGETS jlmol BUNDLE DESTINATION . COMPONENT JlMolDesktop)
+        install(TARGETS jlmol_core LIBRARY DESTINATION "${jlmol_contents}/Frameworks" COMPONENT JlMolDesktop)
+        install(DIRECTORY "${JULIA_ROOT}/" DESTINATION "${jlmol_contents}/Resources/Julia"
+            USE_SOURCE_PERMISSIONS COMPONENT JlMolDesktop
+            PATTERN "*.dSYM" EXCLUDE PATTERN "libccalllazy*.dylib" EXCLUDE)
+        install(FILES Project.toml LICENSE DESTINATION "${jlmol_project}" COMPONENT JlMolDesktop)
+        install(DIRECTORY src examples DESTINATION "${jlmol_project}" COMPONENT JlMolDesktop)
+        install(FILES resources/1CRN.pdb resources/README.md DESTINATION "${jlmol_project}/resources" COMPONENT JlMolDesktop)
+        install(FILES test/scientific_reference.jl DESTINATION "${jlmol_project}/test" COMPONENT JlMolDesktop)
+        install(FILES test/data/crambin_reference.toml test/data/crambin_reference.trr test/data/crambin_missing_positions.trr
+            DESTINATION "${jlmol_project}/test/data" COMPONENT JlMolDesktop)
+        if(DEFINED chemfiles_SOURCE_DIR AND EXISTS "${chemfiles_SOURCE_DIR}/LICENSE")
+            install(FILES "${chemfiles_SOURCE_DIR}/LICENSE" DESTINATION "${jlmol_project}/licenses"
+                RENAME Chemfiles.txt COMPONENT JlMolDesktop)
+        endif()
+    endif()
 endif()
 
 include(CTest)
@@ -154,7 +183,8 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/1CRN.pdb"
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/water.xyz"
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/mini.cif"
-        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/secondary.mmcif")
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/secondary.mmcif"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/data/alternate.pdb")
     if(TARGET chemfiles)
         add_executable(jlmol_trajectory_tests test/trajectory_tests.cpp)
         target_link_libraries(jlmol_trajectory_tests PRIVATE jlmol_core chemfiles)
@@ -162,6 +192,12 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
             target_compile_definitions(jlmol_trajectory_tests PRIVATE JLMOL_TEST_ROTATED_CELL_IMPORT=1)
         endif()
         add_test(NAME native_trajectory COMMAND jlmol_trajectory_tests)
+        if(JLMOL_EMBEDDED_JULIA)
+            add_test(NAME scientific_reference COMMAND jlmol --scientific-test)
+            set_tests_properties(scientific_reference PROPERTIES
+                ENVIRONMENT "JULIA_DEPOT_PATH=${CMAKE_BINARY_DIR}/julia-depot"
+                TIMEOUT 90)
+        endif()
     endif()
 endif()
 

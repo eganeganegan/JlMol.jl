@@ -62,15 +62,28 @@ private:
 
 class TrajectoryAnalysisPanel final : public QWidget {
 public:
+    enum class Metric { Rmsd, Rmsf, Pca };
+    struct Settings {
+        Metric metric;
+        bool align;
+        bool selectedOnly;
+        int reference;
+        int stride;
+        int clusters;
+        bool calculated;
+        bool operator==(const Settings&) const = default;
+    };
+
     TrajectoryAnalysisPanel(std::shared_ptr<MolecularScene> scene, CommandDispatcher* dispatcher,
                             JuliaRuntime* runtime, QWidget* parent);
     void refresh();
+    [[nodiscard]] Settings settings() const;
+    bool restoreSettings(const Settings& state);
 
 protected:
     void showEvent(QShowEvent* event) override;
 
 private:
-    enum class Metric { Rmsd, Rmsf, Pca };
     [[nodiscard]] Metric metric() const;
     void clearResult();
     void calculate();

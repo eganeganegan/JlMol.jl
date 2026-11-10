@@ -31,10 +31,10 @@ struct Trajectory::Reader {
 };
 
 Trajectory::Trajectory(const std::filesystem::path& path, std::size_t atomCount)
-    : path_(path), atomCount_(atomCount) {
+    : path_(std::filesystem::absolute(path)), atomCount_(atomCount) {
 #ifdef JLMOL_HAS_CHEMFILES
     if (!atomCount_) throw std::invalid_argument("Load a topology with atoms before attaching a trajectory");
-    reader_ = std::make_unique<Reader>(path);
+    reader_ = std::make_unique<Reader>(path_);
     frameCount_ = reader_->file.nsteps();
     if (frameCount_ == 0) throw std::runtime_error("The trajectory has no frames");
 #else
@@ -59,6 +59,10 @@ std::shared_ptr<const TrajectoryFrame> Trajectory::readFrame(std::size_t index) 
     if (source.size() != atomCount_) {
         throw std::runtime_error("Trajectory frame " + std::to_string(index + 1) + " has " +
             std::to_string(source.size()) + " atoms; the topology has " + std::to_string(atomCount_));
+    }
+    // TRR can contain velocity or force records with no position block.
+    if (!source.get<chemfiles::Property::BOOL>("has_positions").value_or(true)) {
+        throw std::runtime_error("Trajectory frame " + std::to_string(index + 1) + " has no atom positions");
     }
     auto frame = std::make_shared<TrajectoryFrame>();
     frame->positions.reserve(atomCount_);

@@ -3,17 +3,19 @@
 #include "core/Trajectory.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 namespace jlmol {
 
 enum class Representation { BallAndStick, SpaceFilling, Points, Lines, CAlphaTrace, Backbone, Cartoon, Ribbon };
-enum class ColorScheme { Element, Chain, Residue, SecondaryStructure };
+enum class ColorScheme { Element, Chain, Residue, SecondaryStructure, Custom, Sequence };
 using ObjectId = std::uint64_t;
 
 struct MolecularObject {
@@ -26,12 +28,14 @@ struct MolecularObject {
     std::shared_ptr<const Trajectory> trajectory;
     std::size_t frameIndex{};
     FrameMetadata frameMetadata;
+    std::shared_ptr<const std::vector<std::array<float, 3>>> atomColors;
 };
 
 class MolecularScene {
 public:
     // Compatibility helper: replace the scene with one molecule.
     void setMolecule(std::shared_ptr<Molecule> molecule);
+    void replaceWith(MolecularScene&& staged);
     [[nodiscard]] ObjectId addMolecule(std::shared_ptr<Molecule> molecule);
     [[nodiscard]] bool closeObject(ObjectId id);
     void attachTrajectory(ObjectId id, const std::filesystem::path& path);
@@ -55,6 +59,7 @@ public:
     [[nodiscard]] std::optional<Representation> representation(ObjectId id) const;
     void setColorScheme(ColorScheme scheme);
     [[nodiscard]] bool setColorScheme(ObjectId id, ColorScheme scheme);
+    void setAtomColors(ObjectId id, std::span<const float> rgb);
     [[nodiscard]] ColorScheme colorScheme() const;
     [[nodiscard]] std::optional<ColorScheme> colorScheme(ObjectId id) const;
 

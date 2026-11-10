@@ -276,11 +276,13 @@ TrajectoryAnalysisPanel::TrajectoryAnalysisPanel(std::shared_ptr<MolecularScene>
     selectedOnly_->setObjectName(QStringLiteral("TrajectorySelectedOnly"));
     controls->addWidget(selectedOnly_);
     reference_ = new QSpinBox(this);
+    reference_->setRange(1, 1);
     reference_->setPrefix(QStringLiteral("Ref: "));
     reference_->setAccessibleName(QStringLiteral("Reference frame"));
     reference_->setKeyboardTracking(false);
     controls->addWidget(reference_);
     stride_ = new QSpinBox(this);
+    stride_->setRange(1, 1);
     stride_->setObjectName(QStringLiteral("TrajectoryStride"));
     stride_->setPrefix(QStringLiteral("Stride: "));
     stride_->setAccessibleName(QStringLiteral("Frame sampling stride"));
@@ -329,6 +331,29 @@ TrajectoryAnalysisPanel::TrajectoryAnalysisPanel(std::shared_ptr<MolecularScene>
 
 TrajectoryAnalysisPanel::Metric TrajectoryAnalysisPanel::metric() const {
     return static_cast<Metric>(metric_->currentIndex());
+}
+
+TrajectoryAnalysisPanel::Settings TrajectoryAnalysisPanel::settings() const {
+    return {metric(), align_->isChecked(), selectedOnly_->isChecked(), reference_->value(),
+            stride_->value(), clusters_->value(), !pointIds_.empty()};
+}
+
+bool TrajectoryAnalysisPanel::restoreSettings(const Settings& state) {
+    clearResult();
+    refresh();
+    {
+        const QSignalBlocker metricBlock(metric_), alignBlock(align_), selectionBlock(selectedOnly_),
+            referenceBlock(reference_), strideBlock(stride_), clusterBlock(clusters_);
+        metric_->setCurrentIndex(static_cast<int>(state.metric));
+        align_->setChecked(state.align);
+        selectedOnly_->setChecked(state.selectedOnly);
+        reference_->setValue(state.reference);
+        stride_->setValue(state.stride);
+        clusters_->setValue(state.clusters);
+    }
+    refresh();
+    if (state.calculated) calculate();
+    return !state.calculated || !pointIds_.empty();
 }
 
 void TrajectoryAnalysisPanel::showEvent(QShowEvent* event) {

@@ -188,7 +188,7 @@ Molecule Molecule::load(const std::filesystem::path& path) {
         }
 
         Molecule molecule;
-        molecule.sourcePath_ = path;
+        molecule.sourcePath_ = std::filesystem::absolute(path);
         molecule.name_ = path.stem().string();
         molecule.atoms_.reserve(frame.size());
         const auto& positions = frame.positions();
@@ -256,7 +256,7 @@ Molecule Molecule::loadPdb(const std::filesystem::path& path) {
     }
 
     Molecule molecule;
-    molecule.sourcePath_ = path;
+    molecule.sourcePath_ = std::filesystem::absolute(path);
     molecule.name_ = path.stem().string();
     std::string line;
     int currentModel = 1;
@@ -307,6 +307,15 @@ Molecule Molecule::withPositions(std::span<const Vec3> positions) const {
     auto result = *this;
     for (std::size_t i = 0; i < positions.size(); ++i) result.atoms_[i].position = positions[i];
     return result;
+}
+
+const Atom* Molecule::atom(std::uint64_t id) const noexcept {
+    if (!id || atoms_.empty() || id > atoms_.back().id) return nullptr;
+    if (id <= atoms_.size() && atoms_[id - 1].id == id) return &atoms_[id - 1];
+    // The PDB fallback can skip alternate locations, leaving gaps in its ordered IDs.
+    const auto found = std::lower_bound(atoms_.begin(), atoms_.end(), id,
+        [](const Atom& atom, std::uint64_t target) { return atom.id < target; });
+    return found != atoms_.end() && found->id == id ? &*found : nullptr;
 }
 
 Vec3 Molecule::center() const noexcept {
