@@ -16,13 +16,18 @@ install(TARGETS jlmol jlmol_core
 jlmol_install_project("share/jlmol")
 
 if(WIN32)
+    if(Qt6_VERSION VERSION_LESS 6.7)
+        message(FATAL_ERROR "The Windows installer requires Qt 6.7 or newer.")
+    endif()
     # Julia's DLL must sit beside jlmol.exe before the Windows loader starts the process.
     install(DIRECTORY "${JULIA_ROOT}/" DESTINATION . USE_SOURCE_PERMISSIONS COMPONENT JlMolDesktop
         PATTERN "*.pdb" EXCLUDE)
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION bin)
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT JlMolDesktop)
     include(InstallRequiredSystemLibraries)
-    qt_generate_deploy_app_script(TARGET jlmol OUTPUT_SCRIPT deploy_desktop NO_COMPILER_RUNTIME NO_TRANSLATIONS)
+    # The Qt kit's legacy software OpenGL DLL cannot render the OpenGL 4.1 viewport.
+    qt_generate_deploy_app_script(TARGET jlmol OUTPUT_SCRIPT deploy_desktop
+        NO_COMPILER_RUNTIME NO_TRANSLATIONS DEPLOY_TOOL_OPTIONS --no-opengl-sw)
 
     set(CPACK_GENERATOR WIX)
     set(CPACK_WIX_UPGRADE_GUID "CEB5A879-433C-44B5-83FC-3A2798669D13")
