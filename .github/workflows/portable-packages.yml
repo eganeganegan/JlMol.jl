@@ -81,6 +81,21 @@ jobs:
           cmake -S . -B build/portable -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" -DJLMOL_PACKAGE_DESKTOP=ON
           cmake --build build/portable --config Release --parallel 4
           ctest --test-dir build/portable -C Release --output-on-failure
+      - name: Prepare software OpenGL for the Windows runner
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $archive = Join-Path $env:RUNNER_TEMP 'mesa-llvmpipe-x64.7z'
+          $driverDir = Join-Path $env:RUNNER_TEMP 'JlMol software OpenGL'
+          $url = 'https://github.com/mmozeiko/build-mesa/releases/download/26.1.6/mesa-llvmpipe-x64-26.1.6.7z'
+          curl.exe --fail --location --retry 2 --output $archive $url
+          $expected = '10b94b8ca45153ef76fea25af97c194ee184420cfa16917ee320d087c2c9e471'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Mesa checksum mismatch' }
+          New-Item -ItemType Directory -Path $driverDir | Out-Null
+          cmake -E chdir $driverDir cmake -E tar xf $archive opengl32.dll
+          Rename-Item (Join-Path $driverDir 'opengl32.dll') 'opengl32sw.dll'
+          $driver = Join-Path $driverDir 'opengl32sw.dll'
+          "JLMOL_SOFTWARE_OPENGL_DLL=$driver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Create and verify the MSI
         shell: pwsh
         run: |
@@ -102,7 +117,7 @@ jobs:
           $removeLog = Join-Path $env:RUNNER_TEMP 'JlMol MSI remove.log'
           Invoke-JlMolInstaller 'install' $installLog @('/i', $package, ('INSTALL_ROOT="{0}"' -f $destination))
           try {
-            python packaging/verify_portable.py $destination
+            python packaging/verify_portable.py $destination --software-opengl-dll $env:JLMOL_SOFTWARE_OPENGL_DLL
           } finally {
             Invoke-JlMolInstaller 'removal' $removeLog @('/x', $package)
           }

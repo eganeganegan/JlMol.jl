@@ -1,5 +1,7 @@
 """Run the bundled JlMol checks from an installed Windows or Linux package."""
 
+from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path
@@ -8,10 +10,10 @@ import sys
 import tempfile
 
 
-def launch_environment(home: Path) -> dict[str, str]:
+def launch_environment(home: Path, software_opengl_dll: Path | None) -> dict[str, str]:
     if os.name == "nt":
         system_root = Path(os.environ["SystemRoot"])
-        return {
+        environment = {
             "SystemRoot": str(system_root),
             "WINDIR": str(system_root),
             "PATH": os.pathsep.join((str(system_root / "System32"), str(system_root))),
@@ -20,9 +22,12 @@ def launch_environment(home: Path) -> dict[str, str]:
             "APPDATA": str(home / "config"),
             "TEMP": str(home),
             "TMP": str(home),
-            "QT_OPENGL": "software",
             "QT_FORCE_STDERR_LOGGING": "1",
+            "QT_LOGGING_RULES": "qt.qpa.gl.debug=true",
         }
+        if software_opengl_dll is not None:
+            environment.update(QT_OPENGL="software", QT_OPENGL_DLL=str(software_opengl_dll))
+        return environment
 
     return {
         **{key: os.environ[key] for key in ("DISPLAY", "XAUTHORITY") if key in os.environ},
@@ -58,7 +63,7 @@ def verify_linux_libraries(executable: Path, root: Path, environment: dict[str, 
             raise RuntimeError(f"{library} resolved to {path}, expected it under {expected}")
 
 
-def verify(root: Path) -> None:
+def verify(root: Path, software_opengl_dll: Path | None = None) -> None:
     project = root / "share/jlmol"
     crambin = project / "resources/1CRN.pdb"
     water = project / "test/data/water.xyz"
@@ -77,7 +82,7 @@ def verify(root: Path) -> None:
 
     with tempfile.TemporaryDirectory(prefix="JlMol clean home ") as temporary:
         home = Path(temporary)
-        environment = launch_environment(home)
+        environment = launch_environment(home, software_opengl_dll)
         if sys.platform.startswith("linux"):
             verify_linux_libraries(executable, root, environment)
 
@@ -88,17 +93,29 @@ def verify(root: Path) -> None:
         )
         for name, *arguments in checks:
             print(f"Checking {name.lower()} from {root}", flush=True)
-            subprocess.run([str(executable), *arguments], cwd=home, env=environment,
-                           check=True, timeout=120)
+            # The Windows GUI executable needs explicit standard handles for its logs.
+            with tempfile.TemporaryFile() as output:
+                try:
+                    subprocess.run([str(executable), *arguments], cwd=home, env=environment,
+                                   stdout=output, stderr=subprocess.STDOUT, check=True, timeout=120)
+                finally:
+                    output.seek(0)
+                    print(output.read().decode("utf-8", errors="replace"), end="", flush=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package_root", type=Path, help="root of the installed or extracted package")
+    parser.add_argument("--software-opengl-dll", type=Path, help="software OpenGL driver for Windows verification")
     args = parser.parse_args()
     if os.name != "nt" and not sys.platform.startswith("linux"):
         parser.error("run this verifier on Windows or Linux")
-    verify(args.package_root.resolve())
+    driver = args.software_opengl_dll
+    if driver is not None:
+        if os.name != "nt" or not driver.is_file():
+            parser.error("--software-opengl-dll requires an existing DLL on Windows")
+        driver = driver.resolve()
+    verify(args.package_root.resolve(), driver)
 
 
 if __name__ == "__main__":

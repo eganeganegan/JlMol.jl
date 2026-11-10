@@ -26,7 +26,7 @@ The verified build is Apple Silicon on macOS 27.0.1 with Qt 6.12 and Julia 1.13.
 
 ## Windows MSI
 
-Use a native Windows x64 build with Visual Studio 2022, its C++ tools and redistributable files, Qt for MSVC, the official Julia runtime on `PATH`, and WiX Toolset 3. The MSI stages the native libraries, Julia, and the Qt runtime and platform plugins alongside the application. The installer adds a JlMol Start menu entry. [Qt Windows deployment](https://doc.qt.io/qt-6/windows-deployment.html) · [Julia Windows embedding](https://docs.julialang.org/en/v1/manual/embedding/#High-Level-Embedding-on-Windows-with-Visual-Studio) · [CPack WiX](https://cmake.org/cmake/help/latest/cpack_gen/wix.html)
+Use a native Windows x64 build with Visual Studio 2022, its C++ tools and redistributable files, Qt 6.7 or newer for MSVC, the official Julia runtime on `PATH`, and WiX Toolset 3. The MSI stages the native libraries, Julia, and the Qt runtime and platform plugins alongside the application. The installer adds a JlMol Start menu entry. The viewport requires an OpenGL 4.1 driver on the host. [Qt Windows deployment](https://doc.qt.io/qt-6/windows-deployment.html) · [Julia Windows embedding](https://docs.julialang.org/en/v1/manual/embedding/#High-Level-Embedding-on-Windows-with-Visual-Studio) · [CPack WiX](https://cmake.org/cmake/help/latest/cpack_gen/wix.html)
 
 ```powershell
 # Set QT_ROOT_DIR to the root of the Qt kit.
@@ -60,6 +60,6 @@ The archive built with Qt 6.8.3 and Julia 1.13.1 passed on Ubuntu 24.04 x86-64 i
 
 ## Windows and Linux verification
 
-The [portable package workflow](../.github/workflows/portable-packages.yml) builds and runs CTest on Windows Server 2022 and Ubuntu 24.04 with Qt 6.8.3 and Julia 1.13.1. Both jobs run the bundled scientific reference, OpenGL rendering, and three-frame trajectory playback checks from a path with spaces and a system-only search path. The Windows job installs and removes the MSI in quiet mode. The Linux job extracts the archive and checks where the dynamic loader finds JlMol, Qt, and Julia. Each job uploads the package after the checks pass.
+The [portable package workflow](../.github/workflows/portable-packages.yml) builds and runs CTest on Windows Server 2022 and Ubuntu 24.04 with Qt 6.8.3 and Julia 1.13.1. Both jobs run the bundled scientific reference, OpenGL rendering, and three-frame trajectory playback checks from a path with spaces and a system-only search path. The Windows job installs and removes the MSI in quiet mode. It supplies a checksum-verified Mesa llvmpipe driver to the verifier so the installed app can render on the hosted runner. The Linux job extracts the archive and checks where the dynamic loader finds JlMol, Qt, and Julia. Each job uploads the package after the checks pass. [Windows llvmpipe build](https://github.com/mmozeiko/build-mesa/releases/tag/26.1.6)
 
 Windows installation and launch verification are pending. Linux verification covers Ubuntu 24.04 x86-64 with software rendering.
