@@ -77,5 +77,5 @@ Run `--benchmark` to measure the native viewer at 1,000, 10,000, and 100,000 ato
 
 The native test suite checks scientific results against analytic cases and independent crambin references. See [scientific methods](docs/scientific_methods.md#numerical-validation) for the fixtures, tolerances, and regeneration steps.
 
-For a standalone macOS build with embedded Qt and Julia, see the [packaging guide](docs/packaging.md).
+See the [packaging guide](docs/packaging.md) for the verified macOS and Ubuntu packages and the Windows installer workflow.
 

@@ -1,0 +1,115 @@
+name: Portable desktop packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/portable-packages.yml
+      - CMakeLists.txt
+      - LICENSE
+      - Project.toml
+      - cmake/**
+      - examples/**
+      - native/**
+      - packaging/**
+      - resources/**
+      - src/**
+      - test/**
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging and graphics test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build patchelf xauth xvfb libgl-dev libgl1-mesa-dri \
+            libglib2.0-0t64 libglx-mesa0 libxcb-cursor0 libxcb-xinerama0 libxkbcommon-dev libxkbcommon-x11-0
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.13.1'
+          arch: x64
+      - name: Build and test
+        run: |
+          cmake -S . -B build/portable -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_INSTALL_LIBDIR=lib -DJLMOL_PACKAGE_DESKTOP=ON
+          cmake --build build/portable --parallel 4
+          ctest --test-dir build/portable --output-on-failure
+      - name: Create and verify the archive
+        run: |
+          cpack --config build/portable/CPackConfig.cmake -B build/packages
+          archive=(build/packages/*.tar.gz)
+          test "${#archive[@]}" -eq 1
+          unpacked="$RUNNER_TEMP/Relocated JlMol package"
+          mkdir -p "$unpacked"
+          tar -xzf "${archive[0]}" -C "$unpacked"
+          executable=$(find "$unpacked" -type f -path '*/bin/jlmol')
+          test -x "$executable"
+          xvfb-run -a -s '-screen 0 1600x1000x24 +extension GLX' \
+            python3 packaging/verify_portable.py "$(dirname "$(dirname "$executable")")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JlMol-linux-x64
+          path: build/packages/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.13.1'
+          arch: x64
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake -S . -B build/portable -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" -DJLMOL_PACKAGE_DESKTOP=ON
+          cmake --build build/portable --config Release --parallel 4
+          ctest --test-dir build/portable -C Release --output-on-failure
+      - name: Create and verify the MSI
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cpack --config build/portable/CPackConfig.cmake -C Release -B build/packages
+          $msi = @(Get-ChildItem build/packages -Filter '*.msi' -File)
+          if ($msi.Count -ne 1) { throw 'Expected one JlMol MSI' }
+          function Invoke-JlMolInstaller([string]$operation, [string]$log, [string[]]$arguments) {
+            $installerArguments = $arguments + @('/qn', '/norestart', '/l*v', ('"{0}"' -f $log))
+            $result = Start-Process -FilePath msiexec.exe -ArgumentList $installerArguments -Wait -PassThru
+            if ($result.ExitCode -ne 0) {
+              if (Test-Path $log) { Get-Content $log -Tail 80 }
+              throw "MSI $operation failed with exit code $($result.ExitCode)"
+            }
+          }
+          $package = '"{0}"' -f $msi[0].FullName
+          $destination = Join-Path $env:RUNNER_TEMP 'JlMol installed package'
+          $installLog = Join-Path $env:RUNNER_TEMP 'JlMol MSI install.log'
+          $removeLog = Join-Path $env:RUNNER_TEMP 'JlMol MSI remove.log'
+          Invoke-JlMolInstaller 'install' $installLog @('/i', $package, ('INSTALL_ROOT="{0}"' -f $destination))
+          try {
+            python packaging/verify_portable.py $destination
+          } finally {
+            Invoke-JlMolInstaller 'removal' $removeLog @('/x', $package)
+          }
+          if (Test-Path (Join-Path $destination 'bin/jlmol.exe')) { throw 'JlMol executable remains after MSI removal' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JlMol-windows-x64
+          path: build/packages/*.msi
+          if-no-files-found: error
+          compression-level: 0

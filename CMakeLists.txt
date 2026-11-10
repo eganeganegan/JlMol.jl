@@ -12,6 +12,11 @@ option(JLMOL_ENABLE_JULIA "Build the embedded Julia runtime" ON)
 option(JLMOL_BUILD_TESTS "Build native tests" ON)
 option(JLMOL_USE_CHEMFILES "Use Chemfiles for molecular file import" ON)
 option(JLMOL_USE_SYSTEM_CHEMFILES "Use an installed Chemfiles instead of the patched bundled version" OFF)
+option(JLMOL_PACKAGE_DESKTOP "Configure a Windows MSI or Linux portable archive" OFF)
+
+if(JLMOL_PACKAGE_DESKTOP AND (CMAKE_CROSSCOMPILING OR (NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")))
+    message(FATAL_ERROR "Build the Windows or Linux desktop package on its target OS.")
+endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 
@@ -31,15 +36,19 @@ if(JLMOL_USE_CHEMFILES)
         set(CHFL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(CHFL_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
         set(CHFL_USE_WARNINGS OFF CACHE BOOL "" FORCE)
-        set(CHFL_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
-        set(CHFL_SYSTEM_LZMA ON CACHE BOOL "" FORCE)
-        set(CHFL_SYSTEM_BZIP2 ON CACHE BOOL "" FORCE)
+        # Standalone Windows and Linux packages use the compressors bundled with Chemfiles.
+        set(jlmol_system_compression ON)
+        if(WIN32 OR JLMOL_PACKAGE_DESKTOP)
+            set(jlmol_system_compression OFF)
+        endif()
+        set(CHFL_SYSTEM_ZLIB ${jlmol_system_compression} CACHE BOOL "" FORCE)
+        set(CHFL_SYSTEM_LZMA ${jlmol_system_compression} CACHE BOOL "" FORCE)
+        set(CHFL_SYSTEM_BZIP2 ${jlmol_system_compression} CACHE BOOL "" FORCE)
         # Chemfiles 0.10 supports older CMake releases; this keeps CMake 4 compatible.
         set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
         FetchContent_Declare(chemfiles
             GIT_REPOSITORY https://github.com/chemfiles/chemfiles.git
             GIT_TAG 843e5949db829dcf76bac1ca3521cc8e10f9ea4e
-            GIT_SHALLOW TRUE
             PATCH_COMMAND
                 "${CMAKE_COMMAND}"
                 "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
@@ -83,6 +92,10 @@ if(TARGET chemfiles)
     target_compile_definitions(jlmol_core PRIVATE JLMOL_HAS_CHEMFILES=1)
 endif()
 set_target_properties(jlmol_core PROPERTIES OUTPUT_NAME jlmol_core)
+if(WIN32)
+    set_target_properties(jlmol_core PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    target_compile_definitions(jlmol_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 set(JLMOL_APP_SOURCES
     native/app/ApplicationPaths.cpp
@@ -102,7 +115,15 @@ set(JLMOL_APP_SOURCES
     native/scripting/JuliaRuntime.cpp
 )
 
-add_executable(jlmol MACOSX_BUNDLE ${JLMOL_APP_SOURCES})
+if(WIN32)
+    qt_add_executable(jlmol WIN32 ${JLMOL_APP_SOURCES})
+    target_compile_definitions(jlmol PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(jlmol PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+elseif(APPLE)
+    add_executable(jlmol MACOSX_BUNDLE ${JLMOL_APP_SOURCES})
+else()
+    qt_add_executable(jlmol ${JLMOL_APP_SOURCES})
+endif()
 target_include_directories(jlmol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/native)
 target_link_libraries(jlmol PRIVATE
     jlmol_core
@@ -118,17 +139,30 @@ if(JLMOL_ENABLE_JULIA)
     find_program(JULIA_EXECUTABLE julia)
     if(JULIA_EXECUTABLE)
         execute_process(
-            COMMAND "${JULIA_EXECUTABLE}" -e "print(normpath(joinpath(Sys.BINDIR, \"..\")))"
+            COMMAND "${JULIA_EXECUTABLE}" --startup-file=no -e "print(normpath(joinpath(Sys.BINDIR, \"..\")))"
             OUTPUT_VARIABLE JULIA_ROOT
             OUTPUT_STRIP_TRAILING_WHITESPACE
             RESULT_VARIABLE JULIA_DISCOVERY_RESULT
         )
+        if(JULIA_DISCOVERY_RESULT STREQUAL "0")
+            file(TO_CMAKE_PATH "${JULIA_ROOT}" JULIA_ROOT)
+        endif()
     endif()
-    if(JULIA_DISCOVERY_RESULT EQUAL 0
-       AND EXISTS "${JULIA_ROOT}/include/julia/julia.h"
-       AND EXISTS "${JULIA_ROOT}/lib/libjulia${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    set(jlmol_julia_library "${JULIA_ROOT}/lib/libjulia${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    if(WIN32)
+        # The official Windows runtime ships separate import libraries and DLLs.
+        set(jlmol_julia_library "${JULIA_ROOT}/lib/libjulia.dll.a")
+        set(jlmol_julia_runtime "${JULIA_ROOT}/bin/libjulia.dll")
+    else()
+        set(jlmol_julia_runtime "${jlmol_julia_library}")
+    endif()
+    if(JULIA_DISCOVERY_RESULT STREQUAL "0" AND EXISTS "${JULIA_ROOT}/include/julia/julia.h"
+       AND EXISTS "${jlmol_julia_library}" AND EXISTS "${jlmol_julia_runtime}")
         target_include_directories(jlmol PRIVATE "${JULIA_ROOT}/include/julia")
-        target_link_libraries(jlmol PRIVATE "${JULIA_ROOT}/lib/libjulia${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        target_link_libraries(jlmol PRIVATE "${jlmol_julia_library}")
+        if(WIN32 AND EXISTS "${JULIA_ROOT}/lib/libopenlibm.dll.a")
+            target_link_libraries(jlmol PRIVATE "${JULIA_ROOT}/lib/libopenlibm.dll.a")
+        endif()
         target_compile_definitions(jlmol PRIVATE
             JLMOL_HAS_JULIA=1
             JLMOL_JULIA_BINDIR="${JULIA_ROOT}/bin"
@@ -145,6 +179,19 @@ if(JLMOL_ENABLE_JULIA)
     endif()
 endif()
 
+function(jlmol_install_project destination)
+    install(FILES Project.toml LICENSE DESTINATION "${destination}" COMPONENT JlMolDesktop)
+    install(DIRECTORY src examples DESTINATION "${destination}" COMPONENT JlMolDesktop)
+    install(FILES resources/1CRN.pdb resources/README.md DESTINATION "${destination}/resources" COMPONENT JlMolDesktop)
+    install(FILES test/scientific_reference.jl DESTINATION "${destination}/test" COMPONENT JlMolDesktop)
+    install(FILES test/data/crambin_reference.toml test/data/crambin_reference.trr test/data/crambin_missing_positions.trr
+        test/data/water.xyz test/data/water_trajectory.xyz DESTINATION "${destination}/test/data" COMPONENT JlMolDesktop)
+    if(DEFINED chemfiles_SOURCE_DIR AND EXISTS "${chemfiles_SOURCE_DIR}/LICENSE")
+        install(FILES "${chemfiles_SOURCE_DIR}/LICENSE" DESTINATION "${destination}/licenses"
+            RENAME Chemfiles.txt COMPONENT JlMolDesktop)
+    endif()
+endfunction()
+
 if(APPLE)
     set_target_properties(jlmol PROPERTIES
         MACOSX_BUNDLE_BUNDLE_NAME "JlMol"
@@ -155,28 +202,29 @@ if(APPLE)
     )
     if(JLMOL_EMBEDDED_JULIA)
         set(jlmol_contents "jlmol.app/Contents")
-        set(jlmol_project "${jlmol_contents}/Resources/jlmol")
         install(TARGETS jlmol BUNDLE DESTINATION . COMPONENT JlMolDesktop)
         install(TARGETS jlmol_core LIBRARY DESTINATION "${jlmol_contents}/Frameworks" COMPONENT JlMolDesktop)
         install(DIRECTORY "${JULIA_ROOT}/" DESTINATION "${jlmol_contents}/Resources/Julia"
             USE_SOURCE_PERMISSIONS COMPONENT JlMolDesktop
             PATTERN "*.dSYM" EXCLUDE PATTERN "libccalllazy*.dylib" EXCLUDE)
-        install(FILES Project.toml LICENSE DESTINATION "${jlmol_project}" COMPONENT JlMolDesktop)
-        install(DIRECTORY src examples DESTINATION "${jlmol_project}" COMPONENT JlMolDesktop)
-        install(FILES resources/1CRN.pdb resources/README.md DESTINATION "${jlmol_project}/resources" COMPONENT JlMolDesktop)
-        install(FILES test/scientific_reference.jl DESTINATION "${jlmol_project}/test" COMPONENT JlMolDesktop)
-        install(FILES test/data/crambin_reference.toml test/data/crambin_reference.trr test/data/crambin_missing_positions.trr
-            DESTINATION "${jlmol_project}/test/data" COMPONENT JlMolDesktop)
-        if(DEFINED chemfiles_SOURCE_DIR AND EXISTS "${chemfiles_SOURCE_DIR}/LICENSE")
-            install(FILES "${chemfiles_SOURCE_DIR}/LICENSE" DESTINATION "${jlmol_project}/licenses"
-                RENAME Chemfiles.txt COMPONENT JlMolDesktop)
-        endif()
+        jlmol_install_project("${jlmol_contents}/Resources/jlmol")
     endif()
+endif()
+
+if(JLMOL_PACKAGE_DESKTOP)
+    include(cmake/PackageDesktop.cmake)
 endif()
 
 include(CTest)
 if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
+    # These test executables use assert to check operations, including in a release build.
+    if(MSVC)
+        set(jlmol_test_asserts /UNDEBUG)
+    else()
+        set(jlmol_test_asserts -UNDEBUG)
+    endif()
     add_executable(jlmol_core_tests test/native_core_tests.cpp)
+    target_compile_options(jlmol_core_tests PRIVATE ${jlmol_test_asserts})
     target_link_libraries(jlmol_core_tests PRIVATE jlmol_core)
     add_test(NAME native_core COMMAND jlmol_core_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/mini.pdb"
@@ -187,6 +235,7 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/test/data/alternate.pdb")
     if(TARGET chemfiles)
         add_executable(jlmol_trajectory_tests test/trajectory_tests.cpp)
+        target_compile_options(jlmol_trajectory_tests PRIVATE ${jlmol_test_asserts})
         target_link_libraries(jlmol_trajectory_tests PRIVATE jlmol_core chemfiles)
         if(NOT JLMOL_USE_SYSTEM_CHEMFILES)
             target_compile_definitions(jlmol_trajectory_tests PRIVATE JLMOL_TEST_ROTATED_CELL_IMPORT=1)
@@ -197,6 +246,10 @@ if(BUILD_TESTING AND JLMOL_BUILD_TESTS)
             set_tests_properties(scientific_reference PROPERTIES
                 ENVIRONMENT "JULIA_DEPOT_PATH=${CMAKE_BINARY_DIR}/julia-depot"
                 TIMEOUT 90)
+            if(WIN32)
+                set_tests_properties(scientific_reference PROPERTIES
+                    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${JULIA_ROOT}/bin")
+            endif()
         endif()
     endif()
 endif()
