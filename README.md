@@ -8,6 +8,10 @@ JlMol is a native molecular viewer built with C++20, Qt 6 Widgets, OpenGL, Chemf
 
 Start with the bundled crambin structure and water trajectory. [User guide](docs/user_guide.md) · [Desktop packages](docs/packaging.md)
 
+## Downloads
+
+Sign in to GitHub, open a successful package run, and choose the Windows x64, Linux x64, or Apple Silicon macOS download under **Artifacts**. [GitHub Actions downloads](https://github.com/eganeganegan/JlMol.jl/actions/workflows/portable-packages.yml)
+
 ## Features
 
 - Native dockable Qt workstation shell
