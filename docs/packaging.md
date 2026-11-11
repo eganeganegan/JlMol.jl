@@ -63,3 +63,11 @@ The archive built with Qt 6.8.3 and Julia 1.13.1 passed on Ubuntu 24.04 x86-64 i
 The [portable package workflow](../.github/workflows/portable-packages.yml) builds and runs CTest on Windows Server 2022 and Ubuntu 24.04 with Qt 6.8.3 and Julia 1.13.1. Both jobs run the bundled scientific reference, OpenGL rendering, and three-frame trajectory playback checks from a path with spaces and a system-only search path. The Windows job installs and removes the MSI in quiet mode. It supplies a checksum-verified Mesa llvmpipe driver to the verifier so the installed app can render on the hosted runner. The Linux job extracts the archive and checks where the dynamic loader finds JlMol, Qt, and Julia. Each job uploads the package after the checks pass. [Windows llvmpipe build](https://github.com/mmozeiko/build-mesa/releases/tag/26.1.6)
 
 On Windows Server 2022 x64, the MSI installed and uninstalled successfully. The installed app passed all 77 scientific checks, rendered helix ribbons and beta sheets, and played the three-frame water trajectory with the runner's Mesa software driver. Linux verification covers Ubuntu 24.04 x86-64 with software rendering. [Verification run](https://github.com/eganeganegan/JlMol.jl/actions/runs/42890684775)
+
+## Preparing a public release
+
+- Build packages from the intended version tag and retain the configuration and CI results with the artifacts.
+- Test the installed or extracted packages, including the quickstart from the Julia console, rendering, and trajectory playback.
+- Check the deployed dependencies and include their matching license and source materials. [Third-party inventory](third_party_notices.md)
+- Sign and notarize the macOS distribution with the release owner's Apple credentials. The local packager currently produces an ad-hoc signature. [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+- Attach the packages, hashes, source archive, and versioned release notes. [Release notes](release_notes.md)

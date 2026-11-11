@@ -43,6 +43,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_INSTALL_LIBDIR=lib -DJLMOL_PACKAGE_DESKTOP=ON
           cmake --build build/portable --parallel 4
           ctest --test-dir build/portable --output-on-failure
+          JLMOL_CORE_LIBRARY="$PWD/build/portable/libjlmol_core.so" \
+            JULIA_DEPOT_PATH="$PWD/build/portable/julia-depot" julia --startup-file=no --project=. test/runtests.jl
       - name: Create and verify the archive
         run: |
           cpack --config build/portable/CPackConfig.cmake -B build/packages
@@ -81,6 +83,9 @@ jobs:
           cmake -S . -B build/portable -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" -DJLMOL_PACKAGE_DESKTOP=ON
           cmake --build build/portable --config Release --parallel 4
           ctest --test-dir build/portable -C Release --output-on-failure
+          $env:JLMOL_CORE_LIBRARY = (Resolve-Path build/portable/Release/jlmol_core.dll).Path
+          $env:JULIA_DEPOT_PATH = Join-Path $PWD 'build/portable/julia-depot'
+          julia --startup-file=no --project=. test/runtests.jl
       - name: Prepare software OpenGL for the Windows runner
         shell: pwsh
         run: |

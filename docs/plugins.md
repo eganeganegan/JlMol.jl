@@ -37,7 +37,7 @@ The Julia Console can use the same registry as the menus.
 
 ```julia
 using JlMol
-loadplugin!("examples/plugins/StructureTools.jl")
+loadplugin!(joinpath(pkgdir(JlMol), "examples", "plugins", "StructureTools.jl"))
 plugins()
 run_plugin_command!(:structure_tools, :summary)
 enableplugin!(:structure_tools, false)
