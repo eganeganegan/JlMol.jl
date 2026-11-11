@@ -4,7 +4,11 @@
 
 JlMol is a native molecular viewer built with C++20, Qt 6 Widgets, OpenGL, Chemfiles, and an embedded Julia runtime. The native scene is authoritative: GUI actions and Julia commands operate on the same molecular objects, representations, color schemes, opacity, visibility, and atom selection.
 
-## Current vertical slice
+![Crambin rendered in JlMol as a rainbow cartoon colored by residue sequence](docs/images/crambin-sequence.png)
+
+Start with the bundled crambin structure and water trajectory. [User guide](docs/user_guide.md) · [Desktop packages](docs/packaging.md)
+
+## Features
 
 - Native dockable Qt workstation shell
 - Multi-format structure loading through Chemfiles, including PDB, mmCIF, XYZ, SDF, MOL2, and GRO
@@ -50,7 +54,7 @@ angle(mol, 1, 2, 3)
 dihedral(mol, 1, 2, 3, 4)
 radius_of_gyration(mol)
 
-water = loadstructure("water.xyz")
+water = loadstructure(joinpath(pkgdir(JlMol), "test", "data", "water.xyz"))
 structures()
 setvisible!(water, false)
 activate!(mol)
@@ -77,5 +81,9 @@ Run `--benchmark` to measure the native viewer at 1,000, 10,000, and 100,000 ato
 
 The native test suite checks scientific results against analytic cases and independent crambin references. See [scientific methods](docs/scientific_methods.md#numerical-validation) for the fixtures, tolerances, and regeneration steps.
 
-See the [packaging guide](docs/packaging.md) for the verified macOS and Ubuntu packages and the Windows installer workflow.
+## Documentation
+
+- [User guide](docs/user_guide.md) · [Julia scripting](docs/scripting.md) · [API reference](docs/api.md) · [Plugin development](docs/plugins.md)
+- [Build and test](docs/building.md) · [Desktop packaging](docs/packaging.md) · [Scientific validation](docs/scientific_methods.md#numerical-validation)
+- [Contributing](CONTRIBUTING.md) · [Release notes](docs/release_notes.md) · [MIT license](LICENSE) · [Third-party notices](docs/third_party_notices.md)
 

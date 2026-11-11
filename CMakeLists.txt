@@ -183,12 +183,25 @@ function(jlmol_install_project destination)
     install(FILES Project.toml LICENSE DESTINATION "${destination}" COMPONENT JlMolDesktop)
     install(DIRECTORY src examples DESTINATION "${destination}" COMPONENT JlMolDesktop)
     install(FILES resources/1CRN.pdb resources/README.md DESTINATION "${destination}/resources" COMPONENT JlMolDesktop)
+    install(FILES docs/third_party_notices.md DESTINATION "${destination}/licenses"
+        RENAME README.md COMPONENT JlMolDesktop)
     install(FILES test/scientific_reference.jl DESTINATION "${destination}/test" COMPONENT JlMolDesktop)
     install(FILES test/data/crambin_reference.toml test/data/crambin_reference.trr test/data/crambin_missing_positions.trr
-        test/data/water.xyz test/data/water_trajectory.xyz DESTINATION "${destination}/test/data" COMPONENT JlMolDesktop)
+        test/data/water.xyz test/data/water_trajectory.xyz test/data/water_analysis.xyz
+        DESTINATION "${destination}/test/data" COMPONENT JlMolDesktop)
     if(DEFINED chemfiles_SOURCE_DIR AND EXISTS "${chemfiles_SOURCE_DIR}/LICENSE")
         install(FILES "${chemfiles_SOURCE_DIR}/LICENSE" DESTINATION "${destination}/licenses"
             RENAME Chemfiles.txt COMPONENT JlMolDesktop)
+    endif()
+    if(DEFINED chemfiles_BINARY_DIR)
+        foreach(notice IN ITEMS bzip2/LICENSE fmt/LICENSE.rst gemmi/include/gemmi/third_party/tao/LICENSE
+                lzma/COPYING mmtf-cpp/LICENSE molfiles/LICENSE pugixml/LICENSE.md tng/COPYING toml11/LICENSE zlib/README)
+            set(notice_path "${chemfiles_BINARY_DIR}/external/${notice}")
+            if(EXISTS "${notice_path}")
+                get_filename_component(notice_dir "${notice}" DIRECTORY)
+                install(FILES "${notice_path}" DESTINATION "${destination}/licenses/${notice_dir}" COMPONENT JlMolDesktop)
+            endif()
+        endforeach()
     endif()
 endfunction()
 

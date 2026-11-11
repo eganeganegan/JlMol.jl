@@ -22,7 +22,26 @@ app="$PWD/build/package/JlMol.app"
 "$app/Contents/MacOS/jlmol" "$app/Contents/Resources/jlmol/resources/1CRN.pdb" --graphics-test
 ```
 
-The verified build is Apple Silicon on macOS 27.0.1 with Qt 6.12 and Julia 1.13.1. An extracted copy passed signature verification, all 77 scientific checks, native graphics checks, and the bundled plugin test from a fresh home outside the checkout. The bundle uses an ad-hoc signature for local testing. Public distribution still needs a target-OS and architecture matrix, dependency redistribution notices, Developer ID signing, and notarization. [Apple notarization guide](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+The verified build is Apple Silicon on macOS 27.0.1 with Qt 6.12 and Julia 1.13.1. An extracted copy passed signature verification, all 77 scientific checks, native graphics checks, and the bundled plugin test from a fresh home outside the checkout. The default ad-hoc signature is for local testing.
+
+## macOS download on GitHub
+
+The [portable package workflow](../.github/workflows/portable-packages.yml) builds an Apple Silicon ZIP on macOS 15 with Qt 6.8.3 and Julia 1.13.1. After verification, the run's **Artifacts** section contains `JlMol-macos-arm64` with the app ZIP and SHA-256 checksum, and `JlMol-macos-qt-sources` with the matching Qt materials. Choose `macos` in the workflow's **Packages to build** menu for a Mac-only run.
+
+The GitHub build uses an ad-hoc signature. Gatekeeper may block the downloaded app on another Mac. [Apple Gatekeeper guidance](https://support.apple.com/en-us/102445)
+
+## macOS distribution package
+
+Install the release owner's Developer ID Application certificate and private key in the macOS keychain. Use `security find-identity -v -p codesigning` to find the full identity name or fingerprint. Store the notarization credentials in a `notarytool` keychain profile and pass its name to the packager. [Apple distribution signing](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac) · [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+
+```sh
+xcrun notarytool store-credentials JlMol-release
+python3 packaging/package_macos.py --archive --output-dir build/macos-distribution \
+  --sign-identity 'Developer ID Application: NAME (TEAMID)' \
+  --notary-profile JlMol-release
+```
+
+The packager signs the nested code and app with the hardened runtime and secure timestamps. The launcher and bundled Julia executable receive the entitlements needed for Julia's JIT and loading libraries from the user's Julia environment. With `--notary-profile`, the packager submits the signed app to Apple, waits for acceptance, and staples and validates the ticket before creating the distribution ZIP.
 
 ## Windows MSI
 
@@ -62,4 +81,23 @@ The archive built with Qt 6.8.3 and Julia 1.13.1 passed on Ubuntu 24.04 x86-64 i
 
 The [portable package workflow](../.github/workflows/portable-packages.yml) builds and runs CTest on Windows Server 2022 and Ubuntu 24.04 with Qt 6.8.3 and Julia 1.13.1. Both jobs run the bundled scientific reference, OpenGL rendering, and three-frame trajectory playback checks from a path with spaces and a system-only search path. The Windows job installs and removes the MSI in quiet mode. It supplies a checksum-verified Mesa llvmpipe driver to the verifier so the installed app can render on the hosted runner. The Linux job extracts the archive and checks where the dynamic loader finds JlMol, Qt, and Julia. Each job uploads the package after the checks pass. [Windows llvmpipe build](https://github.com/mmozeiko/build-mesa/releases/tag/26.1.6)
 
-Windows installation and launch verification are pending. Linux verification covers Ubuntu 24.04 x86-64 with software rendering.
+On Windows Server 2022 x64, the MSI installed and uninstalled successfully. The installed app passed all 77 scientific checks, rendered helix ribbons and beta sheets, and played the three-frame water trajectory with the runner's Mesa software driver. Linux verification covers Ubuntu 24.04 x86-64 with software rendering. [Verification run](https://github.com/eganeganegan/JlMol.jl/actions/runs/42937009842)
+
+## Qt source and license materials
+
+Run the collector for the Qt installation used to build the package. The CI kit archive covers Qt Base and Qt SVG from Qt 6.8.3. The Homebrew archive covers the installed Qt Base version and carries its recorded patches, formula, and software bill of materials.
+
+```sh
+python3 packaging/collect_qt_sources.py --ci-kit
+python3 packaging/collect_qt_sources.py --homebrew-qt "$(brew --prefix qtbase)"
+```
+
+The collector writes the ZIP files to `build/release-materials/` by default. It verifies the sources and patches against their SHA-256 checksums and includes license texts, third-party attributions, and source URLs. Pass `--source-cache` to reuse previously downloaded files. Publish the matching ZIP alongside each binary package and review the redistribution materials for the remaining bundled libraries. [Qt LGPL obligations](https://www.qt.io/development/open-source-lgpl-obligations) · [Third-party inventory](third_party_notices.md)
+
+## Preparing a public release
+
+- Build packages from the intended version tag and retain the configuration and CI results with the artifacts.
+- Test the installed or extracted packages, including the quickstart from the Julia console, rendering, and trajectory playback.
+- Check the deployed dependencies and include their matching license and source materials. [Third-party inventory](third_party_notices.md)
+- Sign and notarize the macOS distribution with the release owner's Apple credentials. Verify the signed package on each supported macOS version and architecture. [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+- Attach the packages, hashes, source archive, and versioned release notes. [Release notes](release_notes.md)

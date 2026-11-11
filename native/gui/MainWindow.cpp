@@ -954,17 +954,27 @@ bool MainWindow::runGraphicsSelfTest(QString* report) {
     const auto orbited = grab();
     const bool orbitPassed = difference(colored, orbited, 12) > 40;
     int zoomUpdates = 0;
-    QImage intermediate;
-    QEventLoop zoomEvents;
-    connect(viewport_, &MolecularViewport::cameraChanged, &zoomEvents, [&] {
-        if (++zoomUpdates == 1) intermediate = grab();
-    });
-    QWheelEvent wheel(center, viewport_->mapToGlobal(center.toPoint()), QPoint(0, 155), QPoint(),
-                      Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
-    QCoreApplication::sendEvent(viewport_, &wheel);
-    QTimer::singleShot(420, &zoomEvents, &QEventLoop::quit);
-    zoomEvents.exec();
+    std::optional<MolecularViewport::CameraState> intermediateCamera;
+    {
+        QEventLoop zoomEvents;
+        connect(viewport_, &MolecularViewport::cameraChanged, &zoomEvents, [&] {
+            // Reading the framebuffer here would block the animation on slower runners.
+            if (++zoomUpdates == 1) intermediateCamera = viewport_->cameraState();
+        });
+        QWheelEvent wheel(center, viewport_->mapToGlobal(center.toPoint()), QPoint(0, 155), QPoint(),
+                          Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+        QCoreApplication::sendEvent(viewport_, &wheel);
+        QTimer::singleShot(2000, &zoomEvents, &QEventLoop::quit);
+        zoomEvents.exec();
+    }
+    const auto zoomedCamera = viewport_->cameraState();
     const auto zoomed = grab();
+    QImage intermediate;
+    if (intermediateCamera) {
+        viewport_->restoreCamera(*intermediateCamera);
+        intermediate = grab();
+        viewport_->restoreCamera(zoomedCamera);
+    }
     const bool zoomPassed = zoomUpdates > 2 && difference(orbited, intermediate, 12) > 40 &&
                            difference(intermediate, zoomed, 12) > 40;
     checks << QStringLiteral("Fractional orbit: %1; eased trackpad zoom: %2 (%3 updates)")

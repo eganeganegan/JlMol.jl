@@ -4,18 +4,14 @@ The docked console evaluates real Julia source in a persistent `JlMolSession` mo
 
 ```julia
 using JlMol
-protein = active_structure()
+protein = loadstructure(joinpath(pkgdir(JlMol), "resources", "1CRN.pdb"))
 atom_count(protein)
-setrepresentation!(protein, :spacefill)
-colorby!(protein, :chain)
+setrepresentation!(protein, :cartoon)
+colorby!(protein, :secondary_structure)
 selected_atom()
-
-ligand = loadstructure("ligand.sdf")
-structures()
-setvisible!(ligand, false)
-activate!(protein)
-close!(ligand)
 ```
+
+Click an atom in the viewport and run `selected_atom()` again to read its identity. Use `active_structure()` to work with a structure already open in the GUI.
 
 Supported representations are `:ball_and_stick`, `:spacefill`, `:points`, `:lines`, `:c_alpha_trace`, `:backbone`, `:cartoon`, and `:ribbon`. Supported color schemes are `:element`, `:chain`, `:residue`, `:secondary_structure`, and `:sequence`.
 
@@ -42,11 +38,20 @@ The structure argument may be omitted from `distance`, `angle`, and `dihedral` t
 
 Use `attachtrajectory!(mol, path)` with a matching topology, `setframe!(mol, frame)` to seek, and `trajectory_info(mol)` to inspect the current frame. `trajectory_frame(mol, frame)`, `trajectory_rmsd(mol)`, `trajectory_rmsf(mol)`, and `trajectory_pca(mol)` read frames without moving the viewport. The analysis functions accept `stride` and `atom_ids`. Pass PCA scores to `cluster_conformations` and use the returned representative indices to look up original frame numbers. See [trajectories](trajectories.md) for linked plots, periodic cell data, and explicit minimum-image distances.
 
-The embedded session executes trusted local Julia code. It is not a security sandbox. Computation is synchronous in the current milestone; avoid long-running expressions during interactive work.
+The embedded session executes local Julia code with the app's permissions. Computation runs synchronously on the GUI thread, so long-running expressions pause interaction.
 
 ## Script editor
 
 The Julia Script Editor dock provides multiple movable tabs, line numbers, Julia syntax highlighting, UTF-8 open/save/save-as, unsaved-change prompts, search/replace, and output display. `Ctrl+Return` runs the selection, or the whole file when no text is selected. `Ctrl+Shift+Return` always runs the whole file. Editor and console execution share the same persistent `JlMolSession` module.
 
 In the console, Up and Down recall command history for single-line input.
+
+Run the bundled example from the console or open it in the editor. It loads crambin, calculates raw RMSD for a three-frame water trajectory, and leaves the protein active.
+
+```julia
+using JlMol
+include(joinpath(pkgdir(JlMol), "examples", "quickstart.jl"))
+```
+
+See the [quickstart script](../examples/quickstart.jl) and [Julia API reference](api.md).
 
