@@ -1,8 +1,10 @@
 """Stage, sign, and verify a standalone JlMol application on macOS."""
 
 import argparse
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +16,7 @@ MACH_O_MAGIC = {
     for magic in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")
 }
 SYSTEM_PATHS = ("/System/Library", "/usr/lib")
+JULIA_ENTITLEMENTS = Path(__file__).with_name("macos-julia.entitlements")
 LIBRARY_COMMANDS = {
     "LC_LOAD_DYLIB", "LC_LOAD_WEAK_DYLIB", "LC_REEXPORT_DYLIB", "LC_LOAD_UPWARD_DYLIB", "LC_LAZY_LOAD_DYLIB",
 }
@@ -143,15 +146,50 @@ def deploy_qt(bundle, macdeployqt):
         raise ValueError("Qt deployment did not produce the Cocoa platform plugin.")
 
 
-def sign_bundle(bundle, binaries):
-    print("Signing nested code and the app with an ad-hoc signature.", flush=True)
+def verify_signing_identity(identity):
+    result = run("security", "find-identity", "-v", "-p", "codesigning", capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r'\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(Developer ID Application: .+)"\s*', line)
+        if match and (identity == match[2] or identity.casefold() == match[1].casefold()):
+            return
+    raise ValueError("Install a valid Developer ID Application identity and pass its full name or fingerprint.")
+
+
+def sign_bundle(bundle, binaries, identity=None):
+    command = ("codesign", "--force", "--sign", identity or "-")
+    julia_options = ()
+    if identity:
+        command += ("--options", "runtime", "--timestamp")
+        julia_options = ("--entitlements", JULIA_ENTITLEMENTS)
+    julia = (bundle / "Contents/Resources/Julia/bin/julia").resolve()
+    print(f"Signing nested code and the app with {'Developer ID' if identity else 'an ad-hoc signature'}.", flush=True)
     for path in binaries:
         if path != bundle / "Contents/MacOS/jlmol":
-            run("codesign", "--force", "--sign", "-", path, capture_output=True, text=True)
+            options = julia_options if path == julia else ()
+            run(*command, *options, path, capture_output=True, text=True)
     for framework in sorted(bundle.rglob("*.framework"), key=lambda path: len(path.parts), reverse=True):
         if not framework.is_symlink():
-            run("codesign", "--force", "--sign", "-", framework, capture_output=True, text=True)
-    run("codesign", "--force", "--sign", "-", bundle)
+            run(*command, framework, capture_output=True, text=True)
+    run(*command, *julia_options, bundle)
+    run("codesign", "--verify", "--deep", "--strict", bundle)
+
+
+def zip_bundle(bundle, archive):
+    run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, archive)
+
+
+def notarize_bundle(bundle, staging, profile):
+    submission = staging / "notarization.zip"
+    zip_bundle(bundle, submission)
+    print("Submitting the signed app to Apple for notarization.", flush=True)
+    result = run("xcrun", "notarytool", "submit", submission, "--keychain-profile", profile,
+                 "--wait", "--output-format", "json", capture_output=True, text=True)
+    response = json.loads(result.stdout)
+    if response.get("status") != "Accepted":
+        raise ValueError(f"Apple notarization status: {response.get('status', 'unknown')} "
+                         f"(submission {response.get('id', 'unknown')}).")
+    run("xcrun", "stapler", "staple", bundle)
+    run("xcrun", "stapler", "validate", bundle)
     run("codesign", "--verify", "--deep", "--strict", bundle)
 
 
@@ -166,7 +204,9 @@ def smoke_test(bundle, staging):
     relocated.rename(bundle)
 
 
-def package(build, output, macdeployqt, archive):
+def package(build, output, macdeployqt, archive, sign_identity=None, notary_profile=None):
+    if sign_identity:
+        verify_signing_identity(sign_identity)
     output.mkdir(parents=True, exist_ok=True)
     application = output / "JlMol.app"
     zip_path = output / "JlMol-macOS.zip"
@@ -185,13 +225,15 @@ def package(build, output, macdeployqt, archive):
         binaries = list(macho_files(bundle))
         clean_runpaths(bundle, binaries)
         audit_bundle(bundle, binaries)
-        sign_bundle(bundle, binaries)
+        sign_bundle(bundle, binaries, sign_identity)
         smoke_test(bundle, staging)
 
         final_name = staging / application.name
         bundle.rename(final_name)
+        if notary_profile:
+            notarize_bundle(final_name, staging, notary_profile)
         if archive:
-            run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", final_name, staging / zip_path.name)
+            zip_bundle(final_name, staging / zip_path.name)
         final_name.rename(application)
         if archive:
             (staging / zip_path.name).rename(zip_path)
@@ -205,11 +247,16 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=Path, default=Path("build/package"))
     parser.add_argument("--macdeployqt", default=shutil.which("macdeployqt"))
     parser.add_argument("--archive", action="store_true", help="Also write a macOS ZIP archive.")
+    parser.add_argument("--sign-identity", help="Sign with an installed Developer ID Application identity.")
+    parser.add_argument("--notary-profile", help="Submit and staple using a saved notarytool keychain profile.")
     options = parser.parse_args()
     if sys.platform != "darwin" or not options.macdeployqt:
         parser.error("This tool requires macOS and macdeployqt from the Qt installation used to build JlMol.")
+    if options.notary_profile and not options.sign_identity:
+        parser.error("--notary-profile requires --sign-identity.")
     try:
-        package(options.build_dir.resolve(), options.output_dir.resolve(), options.macdeployqt, options.archive)
+        package(options.build_dir.resolve(), options.output_dir.resolve(), options.macdeployqt, options.archive,
+                options.sign_identity, options.notary_profile)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Packaging failed: {error}", file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
