@@ -1019,6 +1019,8 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     auto* frame = trajectoryPanel_->findChild<QSpinBox*>(QStringLiteral("TrajectoryFrame"));
     auto* play = trajectoryPanel_->findChild<QToolButton*>(QStringLiteral("TrajectoryPlay"));
     const auto atom = object->molecule->atoms().front().id;
+    // Attaching the trajectory shows its dock. Settle the layout before taking the baseline image.
+    QCoreApplication::processEvents();
     const auto unselected = viewport_->grabFramebuffer();
     auto* root = objectTree_->topLevelItem(0);
     root->setExpanded(false);
@@ -1036,6 +1038,7 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     const bool reached = waitForTrajectoryFrame(*active, 2);
     disconnect(countFrames);
     const bool coalesced = deferred && reached && committedFrames == 1;
+    QCoreApplication::processEvents();
     const auto after = viewport_->grabFramebuffer();
     const auto selected = scene_->selectedAtom();
     const bool seek = frame->value() == 3 && selected && selected->id == atom && selected->position.x == 2.0F;
@@ -1080,6 +1083,12 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
                            playback ? QStringLiteral("passed") : QStringLiteral("failed"),
                            partialSelection ? QStringLiteral("passed") : QStringLiteral("failed"),
                            coalesced ? QStringLiteral("passed") : QStringLiteral("failed"));
+        if (!rendered || !matchesRebuild) {
+            *report += QStringLiteral("\nSeek framebuffer %1x%2 to %3x%4. Pixels changed: %5. Rebuild matched: %6.")
+                .arg(before.width()).arg(before.height()).arg(after.width()).arg(after.height())
+                .arg(before != after ? QStringLiteral("yes") : QStringLiteral("no"),
+                     matchesRebuild ? QStringLiteral("yes") : QStringLiteral("no"));
+        }
     }
     return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection && coalesced;
 }
