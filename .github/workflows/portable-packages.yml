@@ -2,6 +2,14 @@ name: Portable desktop packages
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Packages to build
+        type: choice
+        options:
+          - all
+          - macos
+        default: all
   pull_request:
     paths:
       - .github/workflows/portable-packages.yml
@@ -21,6 +29,7 @@ permissions:
 
 jobs:
   linux:
+    if: inputs.target != 'macos'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +74,7 @@ jobs:
           compression-level: 0
 
   windows:
+    if: inputs.target != 'macos'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -131,5 +141,52 @@ jobs:
         with:
           name: JlMol-windows-x64
           path: build/packages/*.msi
+          if-no-files-found: error
+          compression-level: 0
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: clang_64
+          archives: qtbase qtsvg
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.13.1'
+          arch: aarch64
+      - name: Build and test
+        run: |
+          cmake -S . -B build/portable -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build/portable --parallel 3
+          ctest --test-dir build/portable --output-on-failure
+      - name: Create and verify the macOS ZIP
+        run: |
+          python3 packaging/package_macos.py --build-dir build/portable \
+            --macdeployqt "$QT_ROOT_DIR/bin/macdeployqt" --output-dir build/packages --archive
+          mv build/packages/JlMol-macOS.zip build/packages/JlMol-macOS-arm64.zip
+          unpacked="$RUNNER_TEMP/Relocated JlMol package"
+          mkdir -p "$unpacked"
+          ditto -x -k build/packages/JlMol-macOS-arm64.zip "$unpacked"
+          python3 packaging/verify_portable.py "$unpacked/JlMol.app"
+          (cd build/packages && shasum -a 256 JlMol-macOS-arm64.zip > SHA256SUMS)
+      - name: Collect matching Qt source and license materials
+        run: python3 packaging/collect_qt_sources.py --ci-kit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JlMol-macos-arm64
+          path: |
+            build/packages/JlMol-macOS-arm64.zip
+            build/packages/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JlMol-macos-qt-sources
+          path: build/release-materials/Qt-6.8.3-desktop-ci-sources.zip
           if-no-files-found: error
           compression-level: 0

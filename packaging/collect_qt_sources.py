@@ -135,14 +135,14 @@ https://www.qt.io/development/open-source-lgpl-obligations.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     kit = parser.add_mutually_exclusive_group(required=True)
-    kit.add_argument("--ci-kit", action="store_true", help=f"collect the Windows and Linux Qt {CI_QT_VERSION} sources")
+    kit.add_argument("--ci-kit", action="store_true", help=f"collect the desktop CI Qt {CI_QT_VERSION} sources")
     kit.add_argument("--homebrew-qt", type=Path, help="installed Homebrew qtbase prefix used for the macOS build")
     parser.add_argument("--output-dir", type=Path, default=Path("build/release-materials"))
     parser.add_argument("--source-cache", type=Path, help="read source files from this directory and verify their checksums")
     args = parser.parse_args()
     try:
         if args.ci_kit:
-            collect("windows-linux-ci", CI_QT_VERSION, ci_sources(), {}, args.output_dir, args.source_cache)
+            collect("desktop-ci", CI_QT_VERSION, ci_sources(), {}, args.output_dir, args.source_cache)
         else:
             version, sources, provider = homebrew_sources(args.homebrew_qt)
             collect("macos-homebrew", version, sources, provider, args.output_dir, args.source_cache)

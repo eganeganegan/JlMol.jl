@@ -1,4 +1,4 @@
-"""Run the bundled JlMol checks from an installed Windows or Linux package."""
+"""Run the bundled JlMol checks from an installed or extracted package."""
 
 from __future__ import annotations
 
@@ -28,6 +28,9 @@ def launch_environment(home: Path, software_opengl_dll: Path | None) -> dict[str
         if software_opengl_dll is not None:
             environment.update(QT_OPENGL="software", QT_OPENGL_DLL=str(software_opengl_dll))
         return environment
+
+    if sys.platform == "darwin":
+        return {"PATH": "/usr/bin:/bin", "HOME": str(home), "CFFIXED_USER_HOME": str(home), "TMPDIR": str(home)}
 
     return {
         **{key: os.environ[key] for key in ("DISPLAY", "XAUTHORITY") if key in os.environ},
@@ -64,17 +67,23 @@ def verify_linux_libraries(executable: Path, root: Path, environment: dict[str, 
 
 
 def verify(root: Path, software_opengl_dll: Path | None = None) -> None:
-    project = root / "share/jlmol"
-    crambin = project / "resources/1CRN.pdb"
-    water = project / "test/data/water.xyz"
-    trajectory = project / "test/data/water_trajectory.xyz"
-    if os.name == "nt":
+    if sys.platform == "darwin":
+        contents = root / "Contents"
+        project = contents / "Resources/jlmol"
+        executable = contents / "MacOS/jlmol"
+        runtime_files = ("Contents/Frameworks/libjlmol_core.dylib", "Contents/Resources/Julia/bin/julia")
+    elif os.name == "nt":
+        project = root / "share/jlmol"
         executable = root / "bin/jlmol.exe"
         runtime_files = ("bin/jlmol_core.dll", "bin/julia.exe", "bin/libjulia.dll")
     else:
+        project = root / "share/jlmol"
         executable = root / "bin/jlmol"
         runtime_files = ("lib/libjlmol_core.so", "lib/jlmol/Julia/bin/julia")
 
+    crambin = project / "resources/1CRN.pdb"
+    water = project / "test/data/water.xyz"
+    trajectory = project / "test/data/water_trajectory.xyz"
     for path in (executable, project / "Project.toml", crambin, water, trajectory,
                  *(root / name for name in runtime_files)):
         if not path.is_file():
@@ -85,6 +94,9 @@ def verify(root: Path, software_opengl_dll: Path | None = None) -> None:
         environment = launch_environment(home, software_opengl_dll)
         if sys.platform.startswith("linux"):
             verify_linux_libraries(executable, root, environment)
+        elif sys.platform == "darwin":
+            subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", root],
+                           check=True, timeout=30)
 
         checks = (
             ("Scientific reference", "--scientific-test"),
@@ -108,8 +120,8 @@ def main() -> None:
     parser.add_argument("package_root", type=Path, help="root of the installed or extracted package")
     parser.add_argument("--software-opengl-dll", type=Path, help="software OpenGL driver for Windows verification")
     args = parser.parse_args()
-    if os.name != "nt" and not sys.platform.startswith("linux"):
-        parser.error("run this verifier on Windows or Linux")
+    if os.name != "nt" and sys.platform != "darwin" and not sys.platform.startswith("linux"):
+        parser.error("run this verifier on Windows, macOS, or Linux")
     driver = args.software_opengl_dll
     if driver is not None:
         if os.name != "nt" or not driver.is_file():

@@ -24,6 +24,12 @@ app="$PWD/build/package/JlMol.app"
 
 The verified build is Apple Silicon on macOS 27.0.1 with Qt 6.12 and Julia 1.13.1. An extracted copy passed signature verification, all 77 scientific checks, native graphics checks, and the bundled plugin test from a fresh home outside the checkout. The default ad-hoc signature is for local testing.
 
+## macOS download on GitHub
+
+The [portable package workflow](../.github/workflows/portable-packages.yml) builds an Apple Silicon ZIP on macOS 15 with Qt 6.8.3 and Julia 1.13.1. After verification, the run's **Artifacts** section contains `JlMol-macos-arm64` with the app ZIP and SHA-256 checksum, and `JlMol-macos-qt-sources` with the matching Qt materials. Choose `macos` in the workflow's **Packages to build** menu for a Mac-only run.
+
+The GitHub build uses an ad-hoc signature. Gatekeeper may block the downloaded app on another Mac. [Apple Gatekeeper guidance](https://support.apple.com/en-us/102445)
+
 ## macOS distribution package
 
 Install the release owner's Developer ID Application certificate and private key in the macOS keychain. Use `security find-identity -v -p codesigning` to find the full identity name or fingerprint. Store the notarization credentials in a `notarytool` keychain profile and pass its name to the packager. [Apple distribution signing](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac) · [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
@@ -79,7 +85,7 @@ On Windows Server 2022 x64, the MSI installed and uninstalled successfully. The 
 
 ## Qt source and license materials
 
-Run the collector for the Qt installation used to build the package. The CI kit archive covers Qt Base and Qt SVG from Qt 6.8.3 on Windows and Linux. The Homebrew archive covers the installed Qt Base version and carries its recorded patches, formula, and software bill of materials.
+Run the collector for the Qt installation used to build the package. The CI kit archive covers Qt Base and Qt SVG from Qt 6.8.3. The Homebrew archive covers the installed Qt Base version and carries its recorded patches, formula, and software bill of materials.
 
 ```sh
 python3 packaging/collect_qt_sources.py --ci-kit
