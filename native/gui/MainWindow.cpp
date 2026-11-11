@@ -994,6 +994,20 @@ bool MainWindow::runGraphicsSelfTest(QString* report) {
     return passed;
 }
 
+bool MainWindow::waitForTrajectoryFrame(ObjectId id, std::size_t index) {
+    const auto reached = [&] {
+        const auto object = scene_->object(id);
+        return object && object->frameIndex == index;
+    };
+    if (reached()) return true;
+    QEventLoop events;
+    connect(dispatcher_, &CommandDispatcher::frameChanged, &events, [&] { if (reached()) events.quit(); });
+    connect(dispatcher_, &CommandDispatcher::trajectoryFrameRequestFailed, &events, &QEventLoop::quit);
+    QTimer::singleShot(5000, &events, &QEventLoop::quit);
+    events.exec();
+    return reached();
+}
+
 bool MainWindow::runTrajectorySelfTest(QString* report) {
     const auto active = scene_->activeObjectId();
     const auto object = active ? scene_->object(*active) : std::nullopt;
@@ -1013,7 +1027,15 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     const auto before = viewport_->grabFramebuffer();
     const bool partialSelection = !unselected.isNull() && unselected != before &&
         selectionUpdate.uploadBytes == sizeof(RenderVertex) && objectTree_->topLevelItem(0) == root && !root->isExpanded();
+    int committedFrames = 0;
+    const auto countFrames = connect(dispatcher_, &CommandDispatcher::frameChanged, this, [&] { ++committedFrames; });
+    slider->setValue(2);
+    slider->setValue(1);
     slider->setValue(3);
+    const bool deferred = scene_->object(*active)->frameIndex == 0;
+    const bool reached = waitForTrajectoryFrame(*active, 2);
+    disconnect(countFrames);
+    const bool coalesced = deferred && reached && committedFrames == 1;
     const auto after = viewport_->grabFramebuffer();
     const auto selected = scene_->selectedAtom();
     const bool seek = frame->value() == 3 && selected && selected->id == atom && selected->position.x == 2.0F;
@@ -1050,14 +1072,16 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     if (report) {
         *report = QStringLiteral("Timeline seek and selection: %1\nFramebuffer update and rebuild match: %2\n"
                                  "Julia frame access and RMSD: %3\nTimer playback to final frame: %4\n"
-                                 "Partial selection upload and stable explorer: %5")
+                                 "Partial selection upload and stable explorer: %5\n"
+                                 "Rapid seeks publish only the latest frame: %6")
                       .arg(seek ? QStringLiteral("passed") : QStringLiteral("failed"),
                            rendered && matchesRebuild ? QStringLiteral("passed") : QStringLiteral("failed"),
                            bridge && reset ? QStringLiteral("passed") : script,
                            playback ? QStringLiteral("passed") : QStringLiteral("failed"),
-                           partialSelection ? QStringLiteral("passed") : QStringLiteral("failed"));
+                           partialSelection ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           coalesced ? QStringLiteral("passed") : QStringLiteral("failed"));
     }
-    return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection;
+    return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection && coalesced;
 }
 
 bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
@@ -1097,12 +1121,13 @@ bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
     const auto values = plot->values();
     const bool sampled = values.size() == 2 && near(values.front(), 0.0) && near(values.back(), 2.0 / std::sqrt(3.0));
     click(1);
-    const bool sought = scene_->object(*active)->frameIndex == 2 && timeline->value() == 3 &&
+    const bool sought = waitForTrajectoryFrame(*active, 2) && timeline->value() == 3 &&
                         plot->markers() == std::vector<std::size_t>{3};
     const auto drawnAtThree = plot->grab().toImage();
     timeline->setValue(2);
+    const bool reachedTwo = waitForTrajectoryFrame(*active, 1);
     const auto drawnAtTwo = plot->grab().toImage();
-    const bool followed = plot->values() == values && plot->markers() == std::vector<std::size_t>{2} &&
+    const bool followed = reachedTwo && plot->values() == values && plot->markers() == std::vector<std::size_t>{2} &&
                           !drawnAtThree.isNull() && drawnAtTwo.size() == drawnAtThree.size() && drawnAtTwo != drawnAtThree;
 
     const auto oxygen = object->molecule->atoms()[0].id;
@@ -1140,18 +1165,21 @@ bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
         *std::max_element(pcs.begin(), pcs.end()) - *std::min_element(pcs.begin(), pcs.end()) > 0.1 &&
         plot->groups().size() == 3 && plot->groups().front() != plot->groups().back();
     click(0);
-    const bool scatterSought = timeline->value() == 1 && plot->markers() == std::vector<std::size_t>{1};
+    const bool scatterSought = waitForTrajectoryFrame(*active, 0) && timeline->value() == 1 &&
+                               plot->markers() == std::vector<std::size_t>{1};
     const auto pcaAtOne = plot->grab().toImage();
     timeline->setValue(3);
+    const bool reachedThree = waitForTrajectoryFrame(*active, 2);
     const auto pcaAtThree = plot->grab().toImage();
-    const bool scatterFollowed = plot->values() == pcs && plot->markers() == std::vector<std::size_t>{3} &&
+    const bool scatterFollowed = reachedThree && plot->values() == pcs && plot->markers() == std::vector<std::size_t>{3} &&
                                  !pcaAtOne.isNull() && pcaAtThree.size() == pcaAtOne.size() && pcaAtThree != pcaAtOne;
     stride->setValue(2);
     calculate->click();
     timeline->setValue(2);
-    const bool unsampledPca = plot->values().size() == 2 && plot->markers().empty();
+    const bool unsampledPca = waitForTrajectoryFrame(*active, 1) && plot->values().size() == 2 && plot->markers().empty();
     click(1);
-    const bool sampledPca = timeline->value() == 3 && plot->markers() == std::vector<std::size_t>{2};
+    const bool sampledPca = waitForTrajectoryFrame(*active, 2) && timeline->value() == 3 &&
+                            plot->markers() == std::vector<std::size_t>{2};
     const bool pcaLink = projected && scatterSought && scatterFollowed && unsampledPca && sampledPca;
 
     bool contactLink = false;
@@ -1167,7 +1195,7 @@ bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
         dispatcher_->selectAtom(*active, object->molecule->atoms()[2].id);
         const bool mapFollowedSelection = analysisMap_->grab().toImage() != pairMap;
         timeline->setValue(1);
-        const bool framePinned = !analysisMapScroll_->isHidden() &&
+        const bool framePinned = waitForTrajectoryFrame(*active, 0) && !analysisMapScroll_->isHidden() &&
             analysisSummary_->text().contains(QStringLiteral("Map frame 3 : viewer frame 1"));
         contactLink = pairSelected && mapFollowedSelection && framePinned;
     }

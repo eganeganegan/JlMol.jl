@@ -572,7 +572,7 @@ void TrajectoryAnalysisPanel::activatePoint(std::size_t index) {
     const auto object = active ? scene_->object(*active) : std::nullopt;
     if (!object || object_ != active || trajectory_ != object->trajectory || index >= pointIds_.size()) return;
     if (metric() != Metric::Rmsf) {
-        dispatcher_->setTrajectoryFrame(*active, pointIds_[index] - 1);
+        dispatcher_->requestTrajectoryFrame(*active, pointIds_[index] - 1);
     } else {
         dispatcher_->selectAtom(*active, std::optional<std::uint64_t>{pointIds_[index]});
     }

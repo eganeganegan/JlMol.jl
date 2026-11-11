@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QMouseEvent>
+#include <QSlider>
 #include <QTemporaryDir>
 #include <QTextStream>
 
@@ -151,7 +152,23 @@ bool MainWindow::runPerformanceBenchmark(QString* report) {
         const auto seek = [&](int frame) { seeksOk &= dispatcher_->setTrajectoryFrame(*id, frame); };
         series(atoms, "play_uncached", [&](int i) { seek(i + 1); });
         series(atoms, "play_cached", seek);
-        if (!seeksOk || !dispatcher_->closeObject(*id)) return false;
+        if (!seeksOk || !attachTrajectory(trajectory)) return false;
+
+        auto* timeline = findChild<QSlider*>(QStringLiteral("TrajectorySlider"));
+        if (!timeline) return false;
+        std::vector<double> submitTimes, readyTimes;
+        for (int frame = 1; frame < frameCount; ++frame) {
+            QElapsedTimer clock;
+            clock.start();
+            timeline->setValue(frame + 1);
+            submitTimes.push_back(clock.nsecsElapsed() / 1.0e6);
+            if (!waitForTrajectoryFrame(*id, frame)) return false;
+            readyTimes.push_back(clock.nsecsElapsed() / 1.0e6);
+            (void)viewport_->measureRedraw();
+        }
+        output << "# Async uncached seek at " << atoms << " atoms: submit " << median(submitTimes)
+               << " ms, frame ready " << median(readyTimes) << " ms\n";
+        if (!dispatcher_->closeObject(*id)) return false;
         (void)viewport_->measureRedraw();
     }
     return true;

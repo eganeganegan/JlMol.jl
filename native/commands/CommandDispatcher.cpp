@@ -1,12 +1,16 @@
 #include "commands/CommandDispatcher.h"
 
-#include <QString>
+#include <QPromise>
+#include <QThreadPool>
 #include <exception>
+#include <utility>
 
 namespace jlmol {
 
 CommandDispatcher::CommandDispatcher(std::shared_ptr<MolecularScene> scene, QObject* parent)
-    : QObject(parent), scene_(std::move(scene)) {}
+    : QObject(parent), scene_(std::move(scene)) {
+    connect(&frameWatcher_, &QFutureWatcher<FrameResult>::finished, this, &CommandDispatcher::finishFrameRead);
+}
 
 bool CommandDispatcher::loadStructure(const std::filesystem::path& path) {
     try {
@@ -38,6 +42,7 @@ bool CommandDispatcher::attachTrajectory(ObjectId id, const std::filesystem::pat
 }
 
 bool CommandDispatcher::setTrajectoryFrame(ObjectId id, std::size_t index) {
+    cancelTrajectoryFrameRequest(id);
     try {
         scene_->setTrajectoryFrame(id, index);
         emit frameChanged();
@@ -46,6 +51,80 @@ bool CommandDispatcher::setTrajectoryFrame(ObjectId id, std::size_t index) {
         emit commandFailed(QString::fromUtf8(error.what()));
         return false;
     }
+}
+
+void CommandDispatcher::requestTrajectoryFrame(ObjectId id, std::size_t index) {
+    if (scene_->activeObjectId() != id) return;
+    auto object = scene_->object(id);
+    if (!object || !object->trajectory) return;
+    if (index >= object->trajectory->frameCount()) {
+        emit trajectoryFrameRequestFailed();
+        emit commandFailed(QStringLiteral("Trajectory frame is out of range"));
+        return;
+    }
+    if (index == object->frameIndex) {
+        cancelTrajectoryFrameRequest(id);
+        return;
+    }
+    if (requestedTrajectoryFrame(*object) == index) return;
+    requestedFrame_ = std::make_shared<FrameRequest>(FrameRequest{std::move(*object), index});
+    startFrameRead();
+    emit trajectoryFrameRequestChanged();
+}
+
+void CommandDispatcher::cancelTrajectoryFrameRequest(ObjectId id) {
+    if (!requestedFrame_ || requestedFrame_->original.id != id) return;
+    requestedFrame_.reset();
+    emit trajectoryFrameRequestChanged();
+}
+
+std::optional<std::size_t> CommandDispatcher::requestedTrajectoryFrame(const MolecularObject& object) const {
+    if (!requestedFrame_) return std::nullopt;
+    const auto& original = requestedFrame_->original;
+    if (original.id != object.id || original.trajectory != object.trajectory || original.molecule != object.molecule) {
+        return std::nullopt;
+    }
+    return requestedFrame_->index;
+}
+
+void CommandDispatcher::startFrameRead() {
+    if (readingFrame_ || !requestedFrame_) return;
+    readingFrame_ = requestedFrame_;
+    auto promise = std::make_shared<QPromise<FrameResult>>();
+    promise->start();
+    frameWatcher_.setFuture(promise->future());
+    QThreadPool::globalInstance()->start([request = readingFrame_, promise = std::move(promise)] {
+        FrameResult result;
+        try {
+            result.frame = MolecularScene::prepareTrajectoryFrame(request->original, request->index);
+        } catch (const std::exception& error) {
+            result.error = QString::fromUtf8(error.what());
+        }
+        promise->addResult(std::move(result));
+        promise->finish();
+    });
+}
+
+void CommandDispatcher::finishFrameRead() {
+    const auto completed = std::exchange(readingFrame_, nullptr);
+    if (completed && completed == requestedFrame_) {
+        auto result = frameWatcher_.result();
+        requestedFrame_.reset();
+        const auto& original = completed->original;
+        const auto current = scene_->object(original.id);
+        const bool currentRequest = scene_->activeObjectId() == original.id && current &&
+            current->trajectory == original.trajectory && current->molecule == original.molecule;
+        if (currentRequest && result.frame && scene_->applyTrajectoryFrame(original, completed->index, std::move(*result.frame))) {
+            emit frameChanged();
+        } else {
+            emit trajectoryFrameRequestChanged();
+            if (currentRequest && !result.error.isEmpty()) {
+                emit trajectoryFrameRequestFailed();
+                emit commandFailed(result.error);
+            }
+        }
+    }
+    startFrameRead();
 }
 
 bool CommandDispatcher::setActiveObject(ObjectId id) {

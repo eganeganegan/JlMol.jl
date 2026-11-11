@@ -91,17 +91,29 @@ void MolecularScene::setTrajectoryFrame(ObjectId id, std::size_t index) {
     const auto original = object(id);
     if (!original || !original->trajectory) throw std::runtime_error("No trajectory is attached to this structure");
     if (index == original->frameIndex) return;
-    const auto frame = original->trajectory->readFrame(index);
-    auto molecule = std::make_shared<Molecule>(original->molecule->withPositions(frame->positions));
-    std::scoped_lock lock(mutex_);
-    const auto found = findObject(id);
-    if (found == objects_.end() || found->molecule != original->molecule) {
+    if (!applyTrajectoryFrame(*original, index, prepareTrajectoryFrame(*original, index))) {
         throw std::runtime_error("The structure changed while reading the trajectory frame");
     }
-    found->molecule = std::move(molecule);
+}
+
+PreparedTrajectoryFrame MolecularScene::prepareTrajectoryFrame(const MolecularObject& object, std::size_t index) {
+    if (!object.trajectory || !object.molecule) throw std::runtime_error("No trajectory is attached to this structure");
+    const auto frame = object.trajectory->readFrame(index);
+    return {std::make_shared<Molecule>(object.molecule->withPositions(frame->positions)), frame->metadata};
+}
+
+bool MolecularScene::applyTrajectoryFrame(const MolecularObject& original, std::size_t index,
+                                          PreparedTrajectoryFrame frame) {
+    std::scoped_lock lock(mutex_);
+    const auto found = findObject(original.id);
+    if (found == objects_.end() || found->molecule != original.molecule || found->trajectory != original.trajectory) {
+        return false;
+    }
+    found->molecule = std::move(frame.molecule);
     found->frameIndex = index;
-    found->frameMetadata = frame->metadata;
+    found->frameMetadata = frame.metadata;
     ++generation_;
+    return true;
 }
 
 std::vector<MolecularObject> MolecularScene::objects() const {

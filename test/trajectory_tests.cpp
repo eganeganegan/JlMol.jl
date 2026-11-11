@@ -139,7 +139,11 @@ int main() {
                   "Random access should return the expected coordinates in angstroms");
             check(jlmol_copy_trajectory_frame(id, 11, coordinates, 2) != 0, "Accepted a too-small frame buffer");
             check(scene.object(id)->frameIndex == 0, "A copied frame should not move the viewport");
+            const auto beforeSeek = scene.object(id);
+            auto superseded = jlmol::MolecularScene::prepareTrajectoryFrame(*beforeSeek, 2);
             checkApi(jlmol_set_trajectory_frame(id, 4));
+            check(!scene.applyTrajectoryFrame(*beforeSeek, 2, std::move(superseded)),
+                  "A prepared frame overwrote a newer synchronous seek");
             check(jlmol_trajectory_state(id, &count, &index, &time, cell) == 0 && count == frameCount && index == 4,
                   "Wrong displayed frame state");
             check(std::abs(cell[0] - 22.0) < 0.02 && std::abs(cell[4] - 21.0) < 0.02 &&

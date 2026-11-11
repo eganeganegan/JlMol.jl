@@ -28,7 +28,6 @@ TrajectoryPanel::TrajectoryPanel(std::shared_ptr<MolecularScene> scene, CommandD
     slider_ = new QSlider(Qt::Horizontal, this);
     slider_->setObjectName(QStringLiteral("TrajectorySlider"));
     slider_->setAccessibleName(QStringLiteral("Trajectory timeline"));
-    slider_->setTracking(false);
     controls->addWidget(slider_, 1);
     controls->addWidget(new QLabel(QStringLiteral("Frame"), this));
     frame_ = new QSpinBox(this);
@@ -47,8 +46,11 @@ TrajectoryPanel::TrajectoryPanel(std::shared_ptr<MolecularScene> scene, CommandD
     layout->addWidget(summary_);
 
     timer_ = new QTimer(this);
+    connect(dispatcher_, &CommandDispatcher::trajectoryFrameRequestChanged, this, &TrajectoryPanel::refresh);
+    connect(dispatcher_, &CommandDispatcher::trajectoryFrameRequestFailed, this, &TrajectoryPanel::pause);
     connect(timer_, &QTimer::timeout, this, &TrajectoryPanel::advance);
     connect(slider_, &QSlider::valueChanged, this, &TrajectoryPanel::seek);
+    connect(slider_, &QSlider::sliderReleased, this, &TrajectoryPanel::refresh);
     connect(frame_, &QSpinBox::valueChanged, this, &TrajectoryPanel::seek);
     connect(rate_, &QSpinBox::valueChanged, this, [this](int fps) { timer_->setInterval(1000 / fps); });
     connect(play_, &QToolButton::toggled, this, [this](bool playing) {
@@ -57,9 +59,12 @@ TrajectoryPanel::TrajectoryPanel(std::shared_ptr<MolecularScene> scene, CommandD
             timer_->stop();
             return;
         }
-        if (frame_->value() == frame_->maximum()) seek(1);
+        const auto object = object_ ? scene_->object(*object_) : std::nullopt;
+        if (object && object->frameIndex + 1 == static_cast<std::size_t>(frame_->maximum()) &&
+            !dispatcher_->requestedTrajectoryFrame(*object)) seek(1);
         if (play_->isChecked()) timer_->start(1000 / rate_->value());
     });
+    connect(play_, &QToolButton::clicked, this, [this](bool playing) { if (!playing) pause(); });
     refresh();
 }
 
@@ -67,23 +72,31 @@ void TrajectoryPanel::refresh() {
     const auto active = scene_->activeObjectId();
     const auto object = active ? scene_->object(*active) : std::nullopt;
     const auto trajectory = object ? object->trajectory : nullptr;
-    if (object_ != active || trajectory_ != trajectory) play_->setChecked(false);
+    const auto previous = object_;
+    const bool contextChanged = object_ != active || trajectory_ != trajectory;
     object_ = active;
     trajectory_ = trajectory;
+    if (contextChanged) {
+        play_->setChecked(false);
+        if (previous) dispatcher_->cancelTrajectoryFrameRequest(*previous);
+    }
     const auto count = trajectory ? trajectory->frameCount() : 0;
     const bool available = count > 0 && count <= static_cast<std::size_t>(std::numeric_limits<int>::max());
     const int maximum = available ? static_cast<int>(count) : 1;
     const int current = available ? static_cast<int>(object->frameIndex + 1) : 1;
+    const auto requested = available ? dispatcher_->requestedTrajectoryFrame(*object) : std::nullopt;
+    const int controlFrame = requested ? static_cast<int>(*requested + 1) : current;
     const QSignalBlocker blockSlider(slider_);
     const QSignalBlocker blockFrame(frame_);
     slider_->setRange(1, maximum);
     frame_->setRange(1, maximum);
-    slider_->setValue(current);
-    frame_->setValue(current);
+    if (!slider_->isSliderDown()) slider_->setValue(controlFrame);
+    frame_->setValue(controlFrame);
     slider_->setEnabled(available && count > 1);
     frame_->setEnabled(available && count > 1);
     play_->setEnabled(available && count > 1);
     rate_->setEnabled(available && count > 1);
+    if (!requested && current == maximum) play_->setChecked(false);
     if (!trajectory) {
         summary_->setText(QStringLiteral("Load a structure, then use File > Attach Trajectory."));
         return;
@@ -97,12 +110,16 @@ void TrajectoryPanel::refresh() {
     if (object->frameMetadata.timePs) text += QStringLiteral(" : %1 ps").arg(*object->frameMetadata.timePs, 0, 'g', 7);
     if (std::any_of(object->frameMetadata.cell.begin(), object->frameMetadata.cell.end(),
                     [](double value) { return value != 0.0; })) text += QStringLiteral(" : periodic cell");
+    if (requested) text += QStringLiteral(" - Loading frame %1").arg(controlFrame);
     summary_->setText(text);
 }
 
 int TrajectoryPanel::playbackRate() const { return rate_->value(); }
 
-void TrajectoryPanel::pause() { play_->setChecked(false); }
+void TrajectoryPanel::pause() {
+    play_->setChecked(false);
+    if (object_) dispatcher_->cancelTrajectoryFrameRequest(*object_);
+}
 
 void TrajectoryPanel::restorePlaybackRate(int rate) {
     pause();
@@ -111,17 +128,16 @@ void TrajectoryPanel::restorePlaybackRate(int rate) {
 
 void TrajectoryPanel::seek(int oneBasedFrame) {
     if (!object_ || !trajectory_) return;
-    if (!dispatcher_->setTrajectoryFrame(*object_, static_cast<std::size_t>(oneBasedFrame - 1))) {
-        play_->setChecked(false);
-        refresh();
-    }
+    dispatcher_->requestTrajectoryFrame(*object_, static_cast<std::size_t>(oneBasedFrame - 1));
 }
 
 void TrajectoryPanel::advance() {
-    refresh();
-    if (!play_->isChecked()) return;
-    if (frame_->value() < frame_->maximum()) seek(frame_->value() + 1);
-    if (frame_->value() == frame_->maximum()) play_->setChecked(false);
+    if (!play_->isChecked() || !object_) return;
+    const auto object = scene_->object(*object_);
+    if (!object || !object->trajectory || dispatcher_->requestedTrajectoryFrame(*object)) return;
+    const auto current = static_cast<int>(object->frameIndex + 1);
+    if (current < frame_->maximum()) seek(current + 1);
+    else play_->setChecked(false);
 }
 
 } // namespace jlmol

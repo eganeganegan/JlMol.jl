@@ -2,7 +2,9 @@
 
 #include "core/MolecularScene.h"
 
+#include <QFutureWatcher>
 #include <QObject>
+#include <QString>
 #include <filesystem>
 #include <memory>
 
@@ -16,6 +18,9 @@ public:
     bool loadStructure(const std::filesystem::path& path);
     bool attachTrajectory(ObjectId id, const std::filesystem::path& path);
     bool setTrajectoryFrame(ObjectId id, std::size_t index);
+    void requestTrajectoryFrame(ObjectId id, std::size_t index);
+    void cancelTrajectoryFrameRequest(ObjectId id);
+    [[nodiscard]] std::optional<std::size_t> requestedTrajectoryFrame(const MolecularObject& object) const;
     bool closeObject(ObjectId id);
     bool setActiveObject(ObjectId id);
     bool setObjectVisible(ObjectId id, bool visible);
@@ -30,10 +35,27 @@ public:
 signals:
     void sceneChanged();
     void frameChanged();
+    void trajectoryFrameRequestChanged();
+    void trajectoryFrameRequestFailed();
     void commandFailed(const QString& message);
 
 private:
+    struct FrameRequest {
+        MolecularObject original;
+        std::size_t index;
+    };
+    struct FrameResult {
+        std::optional<PreparedTrajectoryFrame> frame;
+        QString error;
+    };
+
+    void startFrameRead();
+    void finishFrameRead();
+
     std::shared_ptr<MolecularScene> scene_;
+    std::shared_ptr<const FrameRequest> requestedFrame_;
+    std::shared_ptr<const FrameRequest> readingFrame_;
+    QFutureWatcher<FrameResult> frameWatcher_;
 };
 
 } // namespace jlmol

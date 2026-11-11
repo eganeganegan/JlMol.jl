@@ -31,6 +31,11 @@ struct MolecularObject {
     std::shared_ptr<const std::vector<std::array<float, 3>>> atomColors;
 };
 
+struct PreparedTrajectoryFrame {
+    std::shared_ptr<Molecule> molecule;
+    FrameMetadata metadata;
+};
+
 class MolecularScene {
 public:
     // Compatibility helper: replace the scene with one molecule.
@@ -40,6 +45,9 @@ public:
     [[nodiscard]] bool closeObject(ObjectId id);
     void attachTrajectory(ObjectId id, const std::filesystem::path& path);
     void setTrajectoryFrame(ObjectId id, std::size_t index);
+    [[nodiscard]] static PreparedTrajectoryFrame prepareTrajectoryFrame(const MolecularObject& object, std::size_t index);
+    [[nodiscard]] bool applyTrajectoryFrame(const MolecularObject& original, std::size_t index,
+                                            PreparedTrajectoryFrame frame);
     [[nodiscard]] std::vector<MolecularObject> objects() const;
     [[nodiscard]] std::optional<MolecularObject> object(ObjectId id) const;
     [[nodiscard]] std::size_t objectCount() const;

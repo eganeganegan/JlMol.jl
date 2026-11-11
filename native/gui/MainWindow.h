@@ -80,6 +80,7 @@ private:
     void clearContactMap();
     bool refreshContactMap();
     void refreshDefaultAnalysis();
+    bool waitForTrajectoryFrame(ObjectId id, std::size_t index);
     static void bridgeSceneChanged(void* userData);
 
     std::shared_ptr<MolecularScene> scene_;

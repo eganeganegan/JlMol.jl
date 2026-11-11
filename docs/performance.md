@@ -22,6 +22,8 @@ The benchmark generates temporary structures with 1,000, 10,000, and 100,000 ato
 
 The update column covers synchronous command and panel work. Geometry is CPU preparation of the vertex data. Upload brackets the buffer calls with OpenGL synchronization and reports the maximum number of bytes submitted for an operation. Redraw includes geometry, upload, rendering, and framebuffer readback. The total column is the median of per-sample update and redraw sums. All repeated operations use seven samples. Playback rows measure the work done per frame before any timer delay.
 
+The asynchronous seek summary measures the same seven uncached frames through the timeline. It reports the median time the GUI spends submitting a seek and the median elapsed time until the scene publishes the frame.
+
 ## Before and after
 
 Measured with the Debug build on arm64 macOS 27.0.1, with a 659 × 320 logical-pixel viewport at 2× device scale. Each cell gives total milliseconds before → after for the same workload.
@@ -36,6 +38,6 @@ At 100,000 atoms, a pick uploaded at most 72 bytes after the change, down from 7
 
 ## Current limits
 
-Uncached trajectory reads run synchronously, and text decoding dominates the large XYZ case. The cache holds up to eight decoded frames within a 32 MiB coordinate budget. Each frame installed in the scene also creates a molecule snapshot. With a visible Analysis Workspace, radius of gyration is recalculated for each new snapshot.
+The timeline reads frames and prepares molecule snapshots on a worker. Text decoding still dominates the latency of large XYZ frames. The cache holds up to eight decoded frames within a 32 MiB coordinate budget. The GUI thread updates the viewport and panels after each frame is ready. With a visible Analysis Workspace, radius of gyration is recalculated for each new snapshot.
 
 The viewport batches atoms, bonds, and ribbon geometry in shared buffers. Picks project visible atoms individually. Style changes and changes to ribbon or trace coordinates rebuild geometry. Ordinary atom and bond frame updates reuse the existing CPU geometry and regenerate positions. Full-buffer updates refresh the GPU buffer storage, and localized changes write the affected vertex ranges. Bond inference for structure files without explicit bonds can take quadratic time.
