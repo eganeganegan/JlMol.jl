@@ -123,6 +123,11 @@ def deploy_qt(bundle, macdeployqt):
     # Julia's loader locates its own libraries relative to libjulia. Keep that layout intact.
     nested = f"@executable_path/../Resources/Julia/lib/{name}"
     run("install_name_tool", "-change", julia[0], nested, executable)
+    help_text = subprocess.run([macdeployqt, "-help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, check=False).stdout
+    options = ["-no-strip"]
+    if "-no-codesign" in help_text:
+        options.append("-no-codesign")
     # Let macdeployqt see only libjulia's loader, so it cannot flatten the Julia runtime's own libraries.
     held_runtime = bundle.parent / "julia-runtime"
     runtime.rename(held_runtime)
@@ -130,7 +135,7 @@ def deploy_qt(bundle, macdeployqt):
         loader_dir = runtime / "lib"
         loader_dir.mkdir(parents=True)
         shutil.copy2(held_runtime / "lib" / name, loader_dir / name)
-        run(macdeployqt, bundle, "-no-codesign", "-no-strip")
+        run(macdeployqt, bundle, *options)
     finally:
         if runtime.exists():
             shutil.rmtree(runtime)
