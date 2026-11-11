@@ -36,6 +36,11 @@ struct PreparedTrajectoryFrame {
     FrameMetadata metadata;
 };
 
+struct PreparedTrajectoryAttachment {
+    std::shared_ptr<const Trajectory> trajectory;
+    PreparedTrajectoryFrame firstFrame;
+};
+
 class MolecularScene {
 public:
     // Compatibility helper: replace the scene with one molecule.
@@ -44,6 +49,9 @@ public:
     [[nodiscard]] ObjectId addMolecule(std::shared_ptr<Molecule> molecule);
     [[nodiscard]] bool closeObject(ObjectId id);
     void attachTrajectory(ObjectId id, const std::filesystem::path& path);
+    [[nodiscard]] static PreparedTrajectoryAttachment prepareTrajectoryAttachment(
+        MolecularObject original, const std::filesystem::path& path);
+    [[nodiscard]] bool applyTrajectoryAttachment(const MolecularObject& original, PreparedTrajectoryAttachment attachment);
     void setTrajectoryFrame(ObjectId id, std::size_t index);
     [[nodiscard]] static PreparedTrajectoryFrame prepareTrajectoryFrame(const MolecularObject& object, std::size_t index);
     [[nodiscard]] bool applyTrajectoryFrame(const MolecularObject& original, std::size_t index,

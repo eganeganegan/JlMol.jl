@@ -141,9 +141,8 @@ int main(int argc, char* argv[]) {
     } else if (parser.isSet(trajectoryTest)) {
         QTimer::singleShot(0, &app, [&app, &window, &parser, trajectoryTest] {
             QString report;
-            const bool attached = window.attachTrajectory(parser.value(trajectoryTest));
-            const bool passed = attached && window.runTrajectorySelfTest(&report);
-            qInfo().noquote() << (attached ? report : QStringLiteral("Could not attach the trajectory fixture"));
+            const bool passed = window.runTrajectorySelfTest(parser.value(trajectoryTest), &report);
+            qInfo().noquote() << report;
             app.exit(passed ? 0 : 1);
         });
     } else if (parser.isSet(graphicsTest)) {

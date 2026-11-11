@@ -6,7 +6,9 @@
 
 The trajectory must have the same atom count **and order** as the structure. The reader checks counts on attachment and as frames are read. Coordinate-only formats cannot establish atom correspondence, so the topology must come from the same simulation. Each displayed frame needs atom positions. A TRR record that contains only velocities or forces is rejected. Attaching replaces any previous trajectory on that object and displays its first frame. A failed attach or seek preserves the current scene. Frame changes preserve atom IDs, topology bonds, selection, representation, and opacity.
 
-The loader keeps the trajectory open and reads frames on demand. Each trajectory caches up to eight recently used frames, with a 32 MiB cap on cached coordinate storage. During scrubbing, the viewer keeps showing the last loaded frame while it reads the latest requested frame in the background. Playback waits for each frame to load, so the displayed rate may fall below the selected rate. Large files can take time to index on attachment. Use **View > Fit to Structure** to adjust the camera as needed.
+The desktop indexes a newly selected trajectory and reads its first frame in the background. The status bar shows when a load is pending. The current scene stays usable, and a replacement keeps the previous trajectory available until the new first frame is ready. If you pick another file during loading, the latest request takes priority.
+
+The loader keeps the trajectory open and reads frames on demand. Each trajectory caches up to eight recently used frames, with a 32 MiB cap on cached coordinate storage. During scrubbing, the viewer keeps showing the last loaded frame while it reads the latest requested frame in the background. Playback waits for each frame to load, so the displayed rate may fall below the selected rate. Use **View > Fit to Structure** to adjust the camera as needed.
 
 ## Linked analysis
 

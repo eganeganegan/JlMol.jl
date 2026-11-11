@@ -6,10 +6,31 @@
 #include <utility>
 
 namespace jlmol {
+namespace {
+
+template<typename Result, typename Read>
+void readOnWorker(QFutureWatcher<Result>& watcher, Read read) {
+    auto promise = std::make_shared<QPromise<Result>>();
+    promise->start();
+    watcher.setFuture(promise->future());
+    QThreadPool::globalInstance()->start([read = std::move(read), promise = std::move(promise)] {
+        Result result;
+        try {
+            result.value = read();
+        } catch (const std::exception& error) {
+            result.error = QString::fromUtf8(error.what());
+        }
+        promise->addResult(std::move(result));
+        promise->finish();
+    });
+}
+
+} // namespace
 
 CommandDispatcher::CommandDispatcher(std::shared_ptr<MolecularScene> scene, QObject* parent)
     : QObject(parent), scene_(std::move(scene)) {
-    connect(&frameWatcher_, &QFutureWatcher<FrameResult>::finished, this, &CommandDispatcher::finishFrameRead);
+    connect(&attachmentWatcher_, &QFutureWatcherBase::finished, this, &CommandDispatcher::finishAttachmentRead);
+    connect(&frameWatcher_, &QFutureWatcherBase::finished, this, &CommandDispatcher::finishFrameRead);
 }
 
 bool CommandDispatcher::loadStructure(const std::filesystem::path& path) {
@@ -26,6 +47,7 @@ bool CommandDispatcher::loadStructure(const std::filesystem::path& path) {
 
 bool CommandDispatcher::closeObject(ObjectId id) {
     if (!scene_->closeObject(id)) return false;
+    cancelTrajectoryAttachment(id);
     emit sceneChanged();
     return true;
 }
@@ -33,12 +55,71 @@ bool CommandDispatcher::closeObject(ObjectId id) {
 bool CommandDispatcher::attachTrajectory(ObjectId id, const std::filesystem::path& path) {
     try {
         scene_->attachTrajectory(id, path);
-        emit sceneChanged();
+        notifyTrajectoryAttached(id);
         return true;
     } catch (const std::exception& error) {
         emit commandFailed(QString::fromUtf8(error.what()));
         return false;
     }
+}
+
+void CommandDispatcher::requestTrajectoryAttachment(ObjectId id, const std::filesystem::path& path) {
+    auto object = scene_->object(id);
+    if (!object || !object->molecule) {
+        emit commandFailed(QStringLiteral("The structure selected for this trajectory no longer exists."));
+        return;
+    }
+    if (requestedAttachment_ && requestedAttachment_->original.id == id &&
+        requestedAttachment_->original.trajectory == object->trajectory && requestedAttachment_->path == path) return;
+    requestedAttachment_ = std::make_shared<AttachmentRequest>(AttachmentRequest{std::move(*object), path});
+    emit trajectoryAttachmentChanged(QString::fromStdString(path.filename().string()));
+    startAttachmentRead();
+}
+
+void CommandDispatcher::startAttachmentRead() {
+    if (readingAttachment_ || !requestedAttachment_) return;
+    const auto& original = requestedAttachment_->original;
+    const auto current = scene_->object(original.id);
+    if (!current || current->trajectory != original.trajectory) {
+        cancelTrajectoryAttachment(original.id);
+        return;
+    }
+    readingAttachment_ = requestedAttachment_;
+    readOnWorker(attachmentWatcher_, [request = readingAttachment_] {
+        return MolecularScene::prepareTrajectoryAttachment(request->original, request->path);
+    });
+}
+
+void CommandDispatcher::finishAttachmentRead() {
+    const auto completed = std::exchange(readingAttachment_, nullptr);
+    if (!completed) return;
+    auto result = attachmentWatcher_.future().takeResult();
+    if (completed == requestedAttachment_) {
+        const auto& original = completed->original;
+        if (result.value && scene_->applyTrajectoryAttachment(original, std::move(*result.value))) {
+            notifyTrajectoryAttached(original.id);
+        } else {
+            cancelTrajectoryAttachment(original.id);
+            const auto current = scene_->object(original.id);
+            if (!result.error.isEmpty() && current && current->trajectory == original.trajectory) {
+                emit commandFailed(result.error);
+            }
+        }
+    }
+    startAttachmentRead();
+}
+
+void CommandDispatcher::cancelTrajectoryAttachment(ObjectId id) {
+    if (!requestedAttachment_ || requestedAttachment_->original.id != id) return;
+    requestedAttachment_.reset();
+    emit trajectoryAttachmentChanged({});
+}
+
+void CommandDispatcher::notifyTrajectoryAttached(ObjectId id) {
+    cancelTrajectoryAttachment(id);
+    cancelTrajectoryFrameRequest(id);
+    emit sceneChanged();
+    emit trajectoryAttached(id);
 }
 
 bool CommandDispatcher::setTrajectoryFrame(ObjectId id, std::size_t index) {
@@ -90,31 +171,22 @@ std::optional<std::size_t> CommandDispatcher::requestedTrajectoryFrame(const Mol
 void CommandDispatcher::startFrameRead() {
     if (readingFrame_ || !requestedFrame_) return;
     readingFrame_ = requestedFrame_;
-    auto promise = std::make_shared<QPromise<FrameResult>>();
-    promise->start();
-    frameWatcher_.setFuture(promise->future());
-    QThreadPool::globalInstance()->start([request = readingFrame_, promise = std::move(promise)] {
-        FrameResult result;
-        try {
-            result.frame = MolecularScene::prepareTrajectoryFrame(request->original, request->index);
-        } catch (const std::exception& error) {
-            result.error = QString::fromUtf8(error.what());
-        }
-        promise->addResult(std::move(result));
-        promise->finish();
+    readOnWorker(frameWatcher_, [request = readingFrame_] {
+        return MolecularScene::prepareTrajectoryFrame(request->original, request->index);
     });
 }
 
 void CommandDispatcher::finishFrameRead() {
     const auto completed = std::exchange(readingFrame_, nullptr);
-    if (completed && completed == requestedFrame_) {
-        auto result = frameWatcher_.result();
+    if (!completed) return;
+    auto result = frameWatcher_.future().takeResult();
+    if (completed == requestedFrame_) {
         requestedFrame_.reset();
         const auto& original = completed->original;
         const auto current = scene_->object(original.id);
         const bool currentRequest = scene_->activeObjectId() == original.id && current &&
             current->trajectory == original.trajectory && current->molecule == original.molecule;
-        if (currentRequest && result.frame && scene_->applyTrajectoryFrame(original, completed->index, std::move(*result.frame))) {
+        if (currentRequest && result.value && scene_->applyTrajectoryFrame(original, completed->index, std::move(*result.value))) {
             emit frameChanged();
         } else {
             emit trajectoryFrameRequestChanged();

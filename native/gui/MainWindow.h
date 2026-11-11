@@ -36,7 +36,7 @@ public:
     bool attachTrajectory(const QString& path);
     bool runIntegrationSelfTest(QString* report = nullptr);
     bool runGraphicsSelfTest(QString* report = nullptr);
-    bool runTrajectorySelfTest(QString* report = nullptr);
+    bool runTrajectorySelfTest(const QString& path, QString* report = nullptr);
     bool runLinkedAnalysisSelfTest(QString* report = nullptr);
     bool runPluginSelfTest(const QString& path, QString* report = nullptr);
     bool runWorkspaceSelfTest(const QString& trajectory, QString* report = nullptr);
@@ -80,6 +80,7 @@ private:
     void clearContactMap();
     bool refreshContactMap();
     void refreshDefaultAnalysis();
+    bool waitForTrajectoryAttachment(ObjectId id, const std::shared_ptr<const Trajectory>& previous);
     bool waitForTrajectoryFrame(ObjectId id, std::size_t index);
     static void bridgeSceneChanged(void* userData);
 

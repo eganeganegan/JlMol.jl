@@ -158,6 +158,14 @@ int main() {
             check(jlmol_set_trajectory_frame(id, frameCount) != 0 && scene.object(id)->molecule == current->molecule,
                   "An invalid seek changed the active frame");
             check(molecule->atoms()[0].position.x == 0.0F, "Frame seek mutated an earlier structure snapshot");
+            auto replacement = jlmol::MolecularScene::prepareTrajectoryAttachment(*current, path);
+            checkApi(jlmol_set_trajectory_frame(id, 6));
+            check(scene.applyTrajectoryAttachment(*current, std::move(replacement)) && scene.object(id)->frameIndex == 0,
+                  "Seeking the previous trajectory prevented a prepared attachment from installing");
+            auto supersededAttachment = jlmol::MolecularScene::prepareTrajectoryAttachment(*current, path);
+            const auto installed = scene.object(id)->trajectory;
+            check(!scene.applyTrajectoryAttachment(*current, std::move(supersededAttachment)) &&
+                  scene.object(id)->trajectory == installed, "A stale attachment replaced a newer trajectory");
             std::cout << filenames[format] << ": random access, metadata, cache, and scene state passed\n";
         }
 

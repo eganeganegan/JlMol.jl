@@ -17,6 +17,7 @@ public:
 
     bool loadStructure(const std::filesystem::path& path);
     bool attachTrajectory(ObjectId id, const std::filesystem::path& path);
+    void requestTrajectoryAttachment(ObjectId id, const std::filesystem::path& path);
     bool setTrajectoryFrame(ObjectId id, std::size_t index);
     void requestTrajectoryFrame(ObjectId id, std::size_t index);
     void cancelTrajectoryFrameRequest(ObjectId id);
@@ -35,27 +36,41 @@ public:
 signals:
     void sceneChanged();
     void frameChanged();
+    void trajectoryAttachmentChanged(const QString& filename);
+    void trajectoryAttached(qulonglong objectId);
     void trajectoryFrameRequestChanged();
     void trajectoryFrameRequestFailed();
     void commandFailed(const QString& message);
 
 private:
+    struct AttachmentRequest {
+        MolecularObject original;
+        std::filesystem::path path;
+    };
     struct FrameRequest {
         MolecularObject original;
         std::size_t index;
     };
-    struct FrameResult {
-        std::optional<PreparedTrajectoryFrame> frame;
+    template<typename Value>
+    struct ReadResult {
+        std::optional<Value> value;
         QString error;
     };
 
+    void startAttachmentRead();
+    void finishAttachmentRead();
+    void cancelTrajectoryAttachment(ObjectId id);
+    void notifyTrajectoryAttached(ObjectId id);
     void startFrameRead();
     void finishFrameRead();
 
     std::shared_ptr<MolecularScene> scene_;
+    std::shared_ptr<const AttachmentRequest> requestedAttachment_;
+    std::shared_ptr<const AttachmentRequest> readingAttachment_;
+    QFutureWatcher<ReadResult<PreparedTrajectoryAttachment>> attachmentWatcher_;
     std::shared_ptr<const FrameRequest> requestedFrame_;
     std::shared_ptr<const FrameRequest> readingFrame_;
-    QFutureWatcher<FrameResult> frameWatcher_;
+    QFutureWatcher<ReadResult<PreparedTrajectoryFrame>> frameWatcher_;
 };
 
 } // namespace jlmol

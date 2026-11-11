@@ -72,19 +72,29 @@ bool MolecularScene::closeObject(ObjectId id) {
 void MolecularScene::attachTrajectory(ObjectId id, const std::filesystem::path& path) {
     const auto original = object(id);
     if (!original || !original->molecule) throw std::runtime_error("Molecular object does not exist");
-    auto trajectory = std::make_shared<Trajectory>(path, original->molecule->atoms().size());
-    const auto frame = trajectory->readFrame(0);
-    auto molecule = std::make_shared<Molecule>(original->molecule->withPositions(frame->positions));
-    std::scoped_lock lock(mutex_);
-    const auto found = findObject(id);
-    if (found == objects_.end() || found->molecule != original->molecule) {
+    if (!applyTrajectoryAttachment(*original, prepareTrajectoryAttachment(*original, path))) {
         throw std::runtime_error("The structure changed while loading the trajectory");
     }
-    found->molecule = std::move(molecule);
-    found->trajectory = std::move(trajectory);
+}
+
+PreparedTrajectoryAttachment MolecularScene::prepareTrajectoryAttachment(MolecularObject original,
+                                                                        const std::filesystem::path& path) {
+    if (!original.molecule) throw std::runtime_error("Molecular object does not exist");
+    original.trajectory = std::make_shared<Trajectory>(path, original.molecule->atoms().size());
+    return {original.trajectory, prepareTrajectoryFrame(original, 0)};
+}
+
+bool MolecularScene::applyTrajectoryAttachment(const MolecularObject& original, PreparedTrajectoryAttachment attachment) {
+    std::scoped_lock lock(mutex_);
+    const auto found = findObject(original.id);
+    // Frame changes preserve topology and the trajectory identity. A replacement attachment does not.
+    if (found == objects_.end() || found->trajectory != original.trajectory) return false;
+    found->molecule = std::move(attachment.firstFrame.molecule);
+    found->trajectory = std::move(attachment.trajectory);
     found->frameIndex = 0;
-    found->frameMetadata = frame->metadata;
+    found->frameMetadata = attachment.firstFrame.metadata;
     ++generation_;
+    return true;
 }
 
 void MolecularScene::setTrajectoryFrame(ObjectId id, std::size_t index) {

@@ -152,7 +152,15 @@ bool MainWindow::runPerformanceBenchmark(QString* report) {
         const auto seek = [&](int frame) { seeksOk &= dispatcher_->setTrajectoryFrame(*id, frame); };
         series(atoms, "play_uncached", [&](int i) { seek(i + 1); });
         series(atoms, "play_cached", seek);
-        if (!seeksOk || !attachTrajectory(trajectory)) return false;
+        if (!seeksOk) return false;
+        const auto previous = scene_->object(*id)->trajectory;
+        QElapsedTimer attachmentClock;
+        attachmentClock.start();
+        dispatcher_->requestTrajectoryAttachment(*id, trajectory.toStdString());
+        const auto attachSubmit = attachmentClock.nsecsElapsed() / 1.0e6;
+        if (!waitForTrajectoryAttachment(*id, previous)) return false;
+        output << "# Async attachment at " << atoms << " atoms: submit " << attachSubmit
+               << " ms, first frame ready " << attachmentClock.nsecsElapsed() / 1.0e6 << " ms\n";
 
         auto* timeline = findChild<QSlider*>(QStringLiteral("TrajectorySlider"));
         if (!timeline) return false;

@@ -193,6 +193,9 @@ MainWindow::MainWindow(QWidget* parent)
     setCentralWidget(viewport_);
     createDocks();
 
+    auto* trajectoryLoading = new QLabel(QStringLiteral("Loading trajectory…"), this);
+    statusBar()->addPermanentWidget(trajectoryLoading);
+    trajectoryLoading->hide();
     atomCountLabel_ = new QLabel(QStringLiteral("No structure loaded"), this);
     statusBar()->addPermanentWidget(atomCountLabel_);
     statusBar()->showMessage(QStringLiteral("Ready"));
@@ -201,6 +204,16 @@ MainWindow::MainWindow(QWidget* parent)
     connect(dispatcher_, &CommandDispatcher::sceneChanged, this, &MainWindow::refreshSceneUi);
     connect(dispatcher_, &CommandDispatcher::frameChanged, viewport_, &MolecularViewport::sceneChanged);
     connect(dispatcher_, &CommandDispatcher::frameChanged, this, &MainWindow::refreshFrameUi);
+    connect(dispatcher_, &CommandDispatcher::trajectoryAttachmentChanged, this, [trajectoryLoading](const QString& filename) {
+        trajectoryLoading->setToolTip(filename);
+        trajectoryLoading->setVisible(!filename.isEmpty());
+    });
+    connect(dispatcher_, &CommandDispatcher::trajectoryAttached, this, [this](qulonglong id) {
+        if (scene_->activeObjectId() != id) return;
+        trajectoryDock_->show();
+        trajectoryDock_->raise();
+        viewport_->fitToScene();
+    });
     connect(dispatcher_, &CommandDispatcher::commandFailed, this, &MainWindow::showError);
     connect(viewport_, &MolecularViewport::atomPicked, this,
             [this](ObjectId objectId, std::uint64_t atomId, bool extend) { dispatcher_->selectAtom(objectId, atomId, extend); });
@@ -651,11 +664,7 @@ bool MainWindow::attachTrajectory(const QString& path) {
         showError(QStringLiteral("Open the matching structure before attaching a trajectory."));
         return false;
     }
-    if (!dispatcher_->attachTrajectory(*active, path.toStdString())) return false;
-    trajectoryDock_->show();
-    trajectoryDock_->raise();
-    viewport_->fitToScene();
-    return true;
+    return dispatcher_->attachTrajectory(*active, path.toStdString());
 }
 
 bool MainWindow::showAlignment(ObjectId referenceId, bool reveal) {
@@ -994,6 +1003,20 @@ bool MainWindow::runGraphicsSelfTest(QString* report) {
     return passed;
 }
 
+bool MainWindow::waitForTrajectoryAttachment(ObjectId id, const std::shared_ptr<const Trajectory>& previous) {
+    const auto attached = [&] {
+        const auto object = scene_->object(id);
+        return object && object->trajectory && object->trajectory != previous;
+    };
+    if (attached()) return true;
+    QEventLoop events;
+    connect(dispatcher_, &CommandDispatcher::trajectoryAttachmentChanged, &events,
+            [&](const QString& filename) { if (filename.isEmpty()) events.quit(); });
+    QTimer::singleShot(30000, &events, &QEventLoop::quit);
+    events.exec();
+    return attached();
+}
+
 bool MainWindow::waitForTrajectoryFrame(ObjectId id, std::size_t index) {
     const auto reached = [&] {
         const auto object = scene_->object(id);
@@ -1008,13 +1031,34 @@ bool MainWindow::waitForTrajectoryFrame(ObjectId id, std::size_t index) {
     return reached();
 }
 
-bool MainWindow::runTrajectorySelfTest(QString* report) {
+bool MainWindow::runTrajectorySelfTest(const QString& path, QString* report) {
     const auto active = scene_->activeObjectId();
-    const auto object = active ? scene_->object(*active) : std::nullopt;
-    if (!object || !object->trajectory || object->trajectory->frameCount() != 3) {
-        if (report) *report = QStringLiteral("Expected the three-frame XYZ fixture");
+    if (!active) {
+        if (report) *report = QStringLiteral("Expected a loaded topology for the trajectory test");
         return false;
     }
+    QTemporaryDir temporary;
+    const auto superseded = temporary.filePath(QFileInfo(path).fileName());
+    if (!temporary.isValid() || !QFile::copy(path, superseded)) {
+        if (report) *report = QStringLiteral("Could not copy the trajectory fixture for the replacement test");
+        return false;
+    }
+    const auto previous = scene_->object(*active)->trajectory;
+    int attachments = 0;
+    const auto countAttachments = connect(dispatcher_, &CommandDispatcher::trajectoryAttached, this,
+        [&](qulonglong id) { if (id == *active) ++attachments; });
+    dispatcher_->requestTrajectoryAttachment(*active, superseded.toStdString());
+    dispatcher_->requestTrajectoryAttachment(*active, path.toStdString());
+    const bool attachmentDeferred = scene_->object(*active)->trajectory == previous;
+    const bool attachmentReady = waitForTrajectoryAttachment(*active, previous);
+    disconnect(countAttachments);
+    const auto object = active ? scene_->object(*active) : std::nullopt;
+    if (!attachmentReady || !object || !object->trajectory || object->trajectory->frameCount() != 3) {
+        if (report) *report = QStringLiteral("Could not attach the three-frame trajectory in the background");
+        return false;
+    }
+    const bool attachedLatest = attachmentDeferred && attachments == 1 &&
+        object->trajectory->path() == std::filesystem::absolute(path.toStdString());
     auto* slider = trajectoryPanel_->findChild<QSlider*>(QStringLiteral("TrajectorySlider"));
     auto* frame = trajectoryPanel_->findChild<QSpinBox*>(QStringLiteral("TrajectoryFrame"));
     auto* play = trajectoryPanel_->findChild<QToolButton*>(QStringLiteral("TrajectoryPlay"));
@@ -1082,13 +1126,15 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
         *report = QStringLiteral("Timeline seek and selection: %1\nFramebuffer update and rebuild match: %2\n"
                                  "Julia frame access and RMSD: %3\nTimer playback to final frame: %4\n"
                                  "Partial selection upload and stable explorer: %5\n"
-                                 "Rapid seeks publish only the latest frame: %6")
+                                 "Rapid seeks publish only the latest frame: %6\n"
+                                 "Background attachment publishes only the latest file: %7")
                       .arg(seek ? QStringLiteral("passed") : QStringLiteral("failed"),
                            rendered && matchesRebuild ? QStringLiteral("passed") : QStringLiteral("failed"),
                            bridge && reset ? QStringLiteral("passed") : script,
                            playback ? QStringLiteral("passed") : QStringLiteral("failed"),
                            partialSelection ? QStringLiteral("passed") : QStringLiteral("failed"),
-                           coalesced ? QStringLiteral("passed") : QStringLiteral("failed"));
+                           coalesced ? QStringLiteral("passed") : QStringLiteral("failed"),
+                           attachedLatest ? QStringLiteral("passed") : QStringLiteral("failed"));
         if (!rendered || !matchesRebuild) {
             *report += QStringLiteral("\nSeek framebuffer %1x%2 to %3x%4. Pixels changed: %5. Rebuild matched: %6.")
                 .arg(before.width()).arg(before.height()).arg(after.width()).arg(after.height())
@@ -1096,7 +1142,7 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
                      matchesRebuild ? QStringLiteral("yes") : QStringLiteral("no"));
         }
     }
-    return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection && coalesced;
+    return seek && rendered && matchesRebuild && bridge && reset && playback && partialSelection && coalesced && attachedLatest;
 }
 
 bool MainWindow::runLinkedAnalysisSelfTest(QString* report) {
@@ -1570,13 +1616,14 @@ void MainWindow::chooseStructure() {
 }
 
 void MainWindow::chooseTrajectory() {
-    if (!scene_->activeObjectId()) {
+    const auto active = scene_->activeObjectId();
+    if (!active) {
         showError(QStringLiteral("Open the matching structure before attaching a trajectory."));
         return;
     }
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Attach trajectory to active structure"), {},
         QStringLiteral("Trajectories (*.xtc *.trr *.dcd *.xyz);;All files (*)"));
-    if (!path.isEmpty()) attachTrajectory(path);
+    if (!path.isEmpty()) dispatcher_->requestTrajectoryAttachment(*active, path.toStdString());
 }
 
 void MainWindow::chooseWorkspaceToOpen() {
