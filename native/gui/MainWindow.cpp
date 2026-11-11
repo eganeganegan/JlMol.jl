@@ -1021,6 +1021,10 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     const auto atom = object->molecule->atoms().front().id;
     // Attaching the trajectory shows its dock. Settle the layout before taking the baseline image.
     QCoreApplication::processEvents();
+    const auto viewportMinimum = viewport_->minimumSize();
+    const auto viewportMaximum = viewport_->maximumSize();
+    // The event loop can process further dock and window resize events while the seek is in flight.
+    viewport_->setFixedSize(viewport_->size());
     const auto unselected = viewport_->grabFramebuffer();
     auto* root = objectTree_->topLevelItem(0);
     root->setExpanded(false);
@@ -1048,6 +1052,8 @@ bool MainWindow::runTrajectorySelfTest(QString* report) {
     (void)viewport_->grabFramebuffer();
     (void)scene_->setColorScheme(*active, object->colorScheme);
     const bool matchesRebuild = viewport_->grabFramebuffer() == after;
+    viewport_->setMinimumSize(viewportMinimum);
+    viewport_->setMaximumSize(viewportMaximum);
 
     const auto script = juliaRuntime_.evaluate(QStringLiteral(
         "using JlMol\n"
